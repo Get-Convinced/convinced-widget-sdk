@@ -1,8 +1,8 @@
-* @lazycoder1
+* @lazycoder1 @vignesh-sabhahit
 
 # Release and trust boundaries require explicit maintainer review.
-/.github/workflows/ @lazycoder1
-/package.json @lazycoder1
-/bun.lockb @lazycoder1
-/RELEASING.md @lazycoder1
-/SECURITY.md @lazycoder1
+/.github/workflows/ @lazycoder1 @vignesh-sabhahit
+/package.json @lazycoder1 @vignesh-sabhahit
+/bun.lockb @lazycoder1 @vignesh-sabhahit
+/RELEASING.md @lazycoder1 @vignesh-sabhahit
+/SECURITY.md @lazycoder1 @vignesh-sabhahit
