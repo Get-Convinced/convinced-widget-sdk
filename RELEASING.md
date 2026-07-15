@@ -8,9 +8,10 @@ GitHub organization access does not grant npm scope access. Before the first rel
 
 1. Sign in with `npm login` and confirm `npm whoami` succeeds.
 2. Verify that the account can publish public packages in the `@convinced` scope. If the scope is not controlled by Convinced, stop and rename the package and documentation together before publishing anything.
-3. From the exact commit pushed to public `main`, run `bun install --frozen-lockfile`, `bun run check`, and inspect `npm pack --dry-run --ignore-scripts`.
-4. Remove every old `.tgz` from the checkout. Publish the reviewed working tree with the current npm CLI: `npx npm@11.18.0 publish --access public`. Do not publish a previously generated archive.
-5. Verify the public version, README, declarations, and browser bundle from a clean registry install.
+3. Enable two-factor authentication on the publishing npm account. npm rejects a normal interactive publish when neither account 2FA nor a bypass-enabled granular token is present; prefer account 2FA for this one-time bootstrap rather than creating a publish token.
+4. From the exact commit pushed to public `main`, run `bun install --frozen-lockfile`, `bun run check`, and inspect `npm pack --dry-run --ignore-scripts`.
+5. Remove every old `.tgz` from the checkout. Publish the reviewed working tree with the current npm CLI: `npx npm@11.18.0 publish --access public`. Do not publish a previously generated archive.
+6. Verify the public version, README, declarations, and browser bundle from a clean registry install.
 
 Immediately after the first package exists:
 
