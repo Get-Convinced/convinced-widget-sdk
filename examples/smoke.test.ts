@@ -129,7 +129,16 @@ describe('SDK browser examples', () => {
 
 async function waitForServer(base: string): Promise<void> {
   await waitUntil(async () => {
-    try { return (await fetch(base)).status < 500 } catch { return false }
+    try {
+      const response = await fetch(base)
+      // Drain the readiness response before issuing the real request. Leaving
+      // it unread can poison a pooled Bun connection and surface as a
+      // Malformed_HTTP_Response in fast CI runners.
+      await response.arrayBuffer()
+      return response.status < 500
+    } catch {
+      return false
+    }
   }, 5_000)
 }
 
