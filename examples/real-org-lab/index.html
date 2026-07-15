@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Real organization QA lab for the Convinced Widget SDK">
+    <title>Convinced — Voice SDK Lab</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/overview" data-route="/overview" aria-label="Convinced lab overview">
+        <span class="brand-mark">C</span>
+        <span>Convinced <small>SDK Lab</small></span>
+      </a>
+      <nav aria-label="Lab pages">
+        <a href="/overview" data-route="/overview">Overview</a>
+        <a href="/proof" data-route="/proof">Proof slide</a>
+        <a href="/security" data-route="/security">Security</a>
+      </nav>
+      <button id="open-widget" type="button">Open assistant</button>
+    </header>
+
+    <main>
+      <section class="route-page overview-page" data-page="/overview">
+        <div class="hero-copy">
+          <span class="eyebrow">Iframe-free · voice-first · real dogfood data</span>
+          <h1>One session.<br><em>Every trace.</em></h1>
+          <p>
+            This page uses the JavaScript SDK against the real Convinced organization and
+            Acme Robotics campaign. ElevenLabs is the primary path; chat is the fallback.
+          </p>
+          <div class="hero-actions">
+            <button id="start-voice" type="button" disabled><span></span>Open voice test</button>
+            <a href="/proof" data-route="/proof">See the live slide</a>
+          </div>
+        </div>
+        <div class="signal-orbit" id="overview-orbit" data-convinced-public="true">
+          <span>Voice</span><i>Identity</i><i>SPA</i><i>Slides</i><i>Replay</i>
+        </div>
+      </section>
+
+      <section class="route-page proof-page" data-page="/proof" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">Real Convinced media catalog</span>
+          <h2>Proof the agent<br>can actually show.</h2>
+          <p>Say “show me the AI Sales Engineer proof slide.” The voice agent should navigate here, scroll, highlight this frame, and open the same slide in the widget.</p>
+        </div>
+        <figure id="proof-slide" data-convinced-public="true">
+          <div class="slide-loading">Loading the real slide catalog…</div>
+          <img id="proof-slide-image" alt="AI Sales Engineer proof slide" hidden>
+          <figcaption id="proof-slide-caption">Convinced product proof</figcaption>
+        </figure>
+      </section>
+
+      <section class="route-page security-page" data-page="/security" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">Bounded browser capabilities</span>
+          <h2>Useful tools.<br>No blank cheque.</h2>
+        </div>
+        <div class="security-grid" id="security-controls" data-convinced-public="true">
+          <article><strong>Private voice</strong><p>A short-lived WebRTC token is minted server-side only for the HttpOnly-bound Convinced session.</p></article>
+          <article><strong>Allowlisted DOM</strong><p>Voice may navigate only three known SPA routes and target only public, stable selectors.</p></article>
+          <article><strong>Masked replay</strong><p>Inputs, identity, transcript, and diagnostic traces are blocked before PostHog upload.</p></article>
+          <article><strong>Authoritative history</strong><p>PostHog is observational. Signed Convinced lifecycle writes remain the dashboard source of truth.</p></article>
+        </div>
+      </section>
+    </main>
+
+    <aside class="consent-card ph-no-capture" id="consent-card" aria-labelledby="consent-title">
+      <span class="eyebrow">Before the test</span>
+      <h2 id="consent-title">Start a tracked lab session</h2>
+      <p>Allow privacy-masked PostHog replay and the assistant to navigate, scroll, and highlight only this demo page.</p>
+      <label><input id="analytics-consent" type="checkbox"> Enable masked analytics and replay</label>
+      <label><input id="tools-consent" type="checkbox"> Allow the bounded demo page tools</label>
+      <button id="begin-test" type="button">Start test</button>
+      <output id="consent-error" role="status"></output>
+    </aside>
+
+    <aside class="lab-panel ph-no-capture" aria-label="Live QA correlation">
+      <div class="lab-panel-heading">
+        <div><span>Live correlation</span><strong id="overall-status">Booting…</strong></div>
+        <i id="status-light"></i>
+      </div>
+      <dl>
+        <div><dt>Campaign</dt><dd id="campaign-status">Resolving…</dd></div>
+        <div><dt>Convinced session</dt><dd id="session-status">—</dd></div>
+        <div><dt>ElevenLabs</dt><dd id="voice-status">Not started</dd></div>
+        <div><dt>PostHog session</dt><dd id="posthog-status">Waiting for consent</dd></div>
+        <div><dt>Identity</dt><dd id="identity-status">Anonymous</dd></div>
+        <div><dt>Demo request</dt><dd id="demo-request-status" title="No calendar time has been scheduled.">None · no time booked</dd></div>
+        <div><dt>Last tool</dt><dd id="tool-status">—</dd></div>
+      </dl>
+      <div class="lab-links">
+        <a id="dashboard-link" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">Internal dashboard</a>
+        <a id="replay-link" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">PostHog replay</a>
+      </div>
+      <div class="voice-caption ph-no-capture"><span>Voice</span><output id="voice-caption">Use the widget’s push-to-talk control after starting the test.</output></div>
+      <div class="demo-check ph-no-capture">
+        <div>
+          <span>Real handoff check</span>
+          <output id="demo-e2e-result">Creates a request for follow-up; it does not schedule a calendar meeting.</output>
+        </div>
+        <button id="demo-e2e" type="button" disabled>Run demo-request E2E</button>
+      </div>
+      <div class="quick-prompts">
+        <button data-voice-prompt="Take me to security and highlight the controls." type="button" disabled>Security route</button>
+        <button data-voice-prompt="Show me the AI Sales Engineer proof slide." type="button" disabled>Show slide</button>
+        <button data-voice-prompt="Check the Acme account readiness tool." type="button" disabled>MCP tool</button>
+      </div>
+      <button id="end-test" class="end-test" type="button" disabled>End and persist session</button>
+    </aside>
+
+    <aside class="identity-lab ph-no-capture" id="identity-lab">
+      <button id="identity-toggle" type="button" aria-expanded="false">Test identity linking</button>
+      <form id="identity-form" hidden>
+        <label>Name<input name="name" autocomplete="name" maxlength="128" required></label>
+        <label>Business email<input name="email" type="email" autocomplete="email" maxlength="320" required></label>
+        <label>Company<input name="company" autocomplete="organization" maxlength="128"></label>
+        <button type="submit">Confirm identity</button>
+        <output id="identity-result"></output>
+      </form>
+    </aside>
+
+    <aside class="trace-panel ph-no-capture"><strong>Safe lifecycle trace</strong><ol id="trace-list"></ol></aside>
+    <div id="widget-root"></div>
+
+    <script src="/posthog.js"></script>
+    <script src="/sdk.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

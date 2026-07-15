@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Headless custom-brand rendering example for the Convinced Widget SDK">
+    <title>Morrow House — A custom Convinced experience</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="#top">Morrow <i>House</i></a>
+      <nav><a href="#collection">Collection</a><a href="#proof-film">Stories</a><a href="#commission">Commission</a></nav>
+      <span class="edition">Private edition / 24</span>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="overline">Furniture, light, and objects for considered rooms</p>
+          <h1>Objects with<br>an <em>afterlife.</em></h1>
+          <p class="intro">Made slowly in Sussex. Every material is chosen for the way it changes—not for the way it photographs on day one.</p>
+          <button class="round-link" id="open-concierge" type="button"><span>Speak with<br>the house</span><b>↗</b></button>
+        </div>
+        <div class="hero-image" role="img" aria-label="Abstract sculptural chair in a warm gallery"><span>MH—01</span><i></i></div>
+      </section>
+
+      <section class="manifesto" id="collection">
+        <p>We work in conversation:</p>
+        <h2>your rooms,<br><i>our hands,</i><br>enough time.</h2>
+        <div class="material-swatch"><span>English ash</span></div>
+      </section>
+
+      <section class="proof-film" id="proof-film" data-testid="custom-proof-target">
+        <div><p class="overline">A house in Rye / Film 03</p><h2>Designed around<br>the morning light.</h2><p>The SDK can place a campaign-specific film or slide inside an entirely custom renderer—there is no iframe and no prescribed component tree.</p></div>
+        <figure><div class="film-still"><span>02:18</span><button id="ask-film" type="button" aria-label="Ask the concierge to show the film">▶</button></div><figcaption>Rosehip House, East Sussex</figcaption></figure>
+      </section>
+
+      <section class="commission" id="commission" data-testid="custom-commission-target">
+        <p class="overline">Begin a private commission</p>
+        <h2>Tell us what<br>the room needs.</h2>
+        <button id="show-concierge" type="button">Open the campaign concierge <span>→</span></button>
+      </section>
+    </main>
+
+    <section class="concierge" id="concierge" aria-label="Morrow House voice concierge" hidden>
+      <div class="concierge-head">
+        <div><span class="seal">M</span><p><strong id="concierge-name">The Morrow concierge</strong><small id="campaign-context">Private preview</small></p></div>
+        <button id="close-concierge" type="button" aria-label="Close concierge">×</button>
+      </div>
+      <div class="voice-first">
+        <p><i id="voice-light"></i><span id="voice-state">A voice-led consultation</span></p>
+        <output id="voice-caption">Speak naturally. The concierge can show a lookbook, play a film, and move through this page.</output>
+        <div><button id="start-voice" type="button" disabled>Begin voice</button><button id="voice-proof" type="button" disabled>Ask for proof</button><button id="end-voice" type="button" disabled>End</button></div>
+      </div>
+      <div class="campaign-pills" id="campaign-pills" aria-label="Campaign conversation starters"></div>
+      <div class="conversation" id="conversation" aria-live="polite"></div>
+      <form class="composer" id="composer">
+        <label for="message">Or write to the concierge</label>
+        <div><input id="message" name="message" placeholder="Ask about materials, proof, or the film…"><button type="submit">Send</button></div>
+      </form>
+      <form class="identity-card" id="identity-card" hidden>
+        <div><strong>Receive the private lookbook</strong><p>Campaign logic can choose when—and how—to ask.</p></div>
+        <label>Email<input name="email" type="email" required autocomplete="email"></label>
+        <label>Name<input name="name" autocomplete="name"></label>
+        <button type="submit">Send lookbook</button>
+      </form>
+      <footer><span>No iframe · custom renderer</span><button id="show-identity" type="button">Email this story</button></footer>
+    </section>
+
+    <aside class="trace" aria-label="SDK trace"><strong>Experience trace</strong><ol id="trace-list"></ol></aside>
+
+    <script src="/sdk.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

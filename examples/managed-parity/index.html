@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Default renderer composition example for the Convinced Widget SDK">
+    <title>Arcwell — Default SDK composition</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="#top"><span>A</span>Arcwell</a>
+      <nav><a href="#platform">Platform</a><a href="#proof">Proof</a><a href="#security">Security</a></nav>
+      <button id="open-default-widget" type="button">Open assistant</button>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div>
+          <span class="eyebrow">Revenue systems for complex teams</span>
+          <h1>Make the next<br>move <em>obvious.</em></h1>
+          <p>Arcwell connects buyer signals, product proof, and the people who should act—without turning your team into workflow operators.</p>
+          <div class="hero-actions"><button id="start-managed-voice" type="button" disabled><i></i> Open voice guide</button><a href="#proof">See the proof</a></div>
+        </div>
+        <div class="signal-map" id="platform" data-testid="managed-platform-target"><span>Qualified<br>intent</span><i></i><i></i><i></i><i></i></div>
+      </section>
+
+      <section class="campaign-band" aria-label="Campaign personalization">
+        <span>Session mode</span><strong id="campaign-name">Resolving…</strong><p id="campaign-opener"></p>
+        <div id="campaign-pills"></div>
+      </section>
+
+      <section class="proof" id="proof" data-testid="managed-proof-target">
+        <div><span class="eyebrow">Lumen / Enterprise rollout</span><h2>One buying signal.<br>Forty-six teams aligned.</h2><p>The assistant can bring the strongest approved proof into chat or use a client tool to guide the visitor here during voice.</p></div>
+        <aside><small>Sales cycle</small><strong>−28%</strong><span>in two quarters</span></aside>
+      </section>
+
+      <section class="security" id="security"><span class="eyebrow">Built for the review</span><h2>Governed tools.<br>Inspectible traces.<br>No browser secrets.</h2></section>
+    </main>
+
+    <section class="voice-bar" id="voice-bar" aria-label="ElevenLabs voice controls">
+      <div class="voice-mark"><i></i><i></i><i></i></div>
+      <p><strong id="voice-status">Voice guide ready</strong><output id="voice-caption">Ask by voice to see proof on this page.</output></p>
+      <button id="voice-start" type="button" disabled>Hold to start talking</button>
+      <button id="voice-proof" type="button" disabled>Ask for proof</button>
+      <button id="voice-end" type="button" disabled>End</button>
+    </section>
+
+    <aside class="implementation-note">
+      <strong>Managed SDK preset</strong>
+      <span>One mount: <code>preset: "managed-v2"</code></span>
+      <span>Voice controller is supplied to that mount.</span>
+      <span>Reference behavior, not a pixel clone of every hosted launcher.</span>
+    </aside>
+
+    <aside class="trace"><strong>Tool trace</strong><ol id="trace-list"></ol></aside>
+    <div id="default-widget-root"></div>
+
+    <script src="/sdk.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

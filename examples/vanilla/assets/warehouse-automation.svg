@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title description">
+  <title id="title">Warehouse rollout map</title>
+  <desc id="description">A four-step warehouse automation rollout from route mapping to fleet scale.</desc>
+  <rect width="1280" height="720" fill="#17231e"/>
+  <g fill="none" stroke="#34483f" stroke-width="1" opacity=".8">
+    <path d="M0 120h1280M0 240h1280M0 360h1280M0 480h1280M0 600h1280"/>
+    <path d="M160 0v720M320 0v720M480 0v720M640 0v720M800 0v720M960 0v720M1120 0v720"/>
+  </g>
+  <text x="90" y="105" fill="#d75a36" font-family="Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="4">FIELDWORKS / ROLLOUT</text>
+  <text x="90" y="184" fill="#fffaf2" font-family="Georgia, serif" font-size="54">From one painful route</text>
+  <text x="90" y="246" fill="#fffaf2" font-family="Georgia, serif" font-size="54">to a learning fleet.</text>
+  <path d="M130 470 C 310 315, 470 565, 645 405 S 980 285, 1150 430" fill="none" stroke="#d75a36" stroke-width="12" stroke-linecap="round"/>
+  <g fill="#fffaf2" stroke="#d75a36" stroke-width="8">
+    <circle cx="130" cy="470" r="24"/><circle cx="458" cy="472" r="24"/><circle cx="778" cy="350" r="24"/><circle cx="1150" cy="430" r="24"/>
+  </g>
+  <g fill="#fffaf2" font-family="Arial, sans-serif" font-size="18" font-weight="700">
+    <text x="94" y="545">01 / MAP</text><text x="410" y="545">02 / CONNECT</text><text x="718" y="285">03 / PROVE</text><text x="1084" y="505">04 / SCALE</text>
+  </g>
+</svg>

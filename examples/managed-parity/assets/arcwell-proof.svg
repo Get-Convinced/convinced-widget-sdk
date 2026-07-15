@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
+  <rect width="1200" height="675" fill="#edf3ef"/>
+  <rect x="55" y="55" width="1090" height="565" rx="24" fill="#fff" stroke="#b8cbc2"/>
+  <text x="98" y="125" font-family="Avenir Next,Gill Sans,sans-serif" font-size="22" font-weight="700" fill="#175c52">ARCWELL / LUMEN GROUP</text>
+  <text x="98" y="225" font-family="Georgia,serif" font-size="62" fill="#1c2c34">One signal model,</text>
+  <text x="98" y="295" font-family="Georgia,serif" font-size="62" fill="#1c2c34">forty-six teams aligned.</text>
+  <path d="M100 404h212v125H100z" rx="10" fill="#175c52"/>
+  <text x="128" y="480" font-family="Georgia,serif" font-size="55" fill="#fff">−28%</text>
+  <text x="360" y="436" font-family="Avenir Next,Gill Sans,sans-serif" font-size="20" fill="#62766c">SHORTER SALES CYCLE</text>
+  <text x="360" y="480" font-family="Georgia,serif" font-size="35" fill="#1c2c34">Measured across two quarters</text>
+  <circle cx="1000" cy="170" r="54" fill="#c85b39"/>
+</svg>

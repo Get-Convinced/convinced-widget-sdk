@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Voice-first SPA navigation example for the Convinced Widget SDK">
+    <title>Relay — Voice-first SDK SPA</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="site-header">
+      <a class="brand" href="/home" data-route><span>R</span>Relay</a>
+      <nav aria-label="Primary navigation">
+        <a href="/home" data-route>Product</a>
+        <a href="/pricing" data-route>Pricing</a>
+        <a href="/case-study" data-route>Customer proof</a>
+      </nav>
+      <button class="voice-shortcut" id="focus-voice" type="button"><i></i> Voice guide</button>
+    </header>
+
+    <main id="app" tabindex="-1" aria-live="polite"></main>
+
+    <aside class="campaign-card" aria-label="Resolved campaign attribution">
+      <span>Session signal</span>
+      <strong id="campaign-token">organic</strong>
+      <dl id="campaign-details"></dl>
+    </aside>
+
+    <section class="voice-dock" id="voice-dock" aria-label="Voice assistant controls">
+      <div class="voice-orb" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="voice-copy">
+        <p><span id="voice-status-dot"></span><strong id="voice-status">Voice ready</strong><em id="voice-mode-badge">mock</em></p>
+        <output id="voice-caption">Start voice, then ask the guide to take you somewhere.</output>
+      </div>
+      <div class="voice-actions">
+        <button class="primary-control" id="voice-start" type="button" disabled>Start voice</button>
+        <button id="ask-pricing" type="button" disabled>Ask: pricing</button>
+        <button id="ask-proof" type="button" disabled>Ask: proof</button>
+        <button id="ask-inventory" type="button" disabled>Ask: MCP</button>
+        <button id="voice-mute" type="button" disabled>Mute</button>
+        <button id="voice-end" type="button" disabled>End</button>
+      </div>
+      <details class="chat-fallback">
+        <summary>Use chat instead</summary>
+        <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+        <form id="chat-form">
+          <label class="sr-only" for="chat-input">Message</label>
+          <input id="chat-input" name="message" placeholder="Ask a typed question…" autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      </details>
+    </section>
+
+    <aside class="trace-panel" aria-label="Runtime activity and tool trace">
+      <div class="trace-heading">
+        <span>Live trace</span>
+        <button id="clear-trace" type="button">Clear</button>
+      </div>
+      <ol id="activity-trace" aria-live="polite"></ol>
+    </aside>
+
+    <script src="/sdk.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

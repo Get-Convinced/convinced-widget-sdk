@@ -1,0 +1,456 @@
+# Build a custom Convinced voice-first widget
+
+Paste this entire file into your coding agent while it has access to the web application you want to modify. Replace any `<PLACEHOLDER>` you know. Leave unknown placeholders unchanged and have the agent ask for only the values that block implementation.
+
+## Your role
+
+You are implementing a production-quality, iframe-free Convinced widget with the public npm package `@convinced/widget-sdk`.
+
+Inspect the host application before editing it. Reuse its framework, router, design system, consent system, analytics setup, error reporting, tests, and server conventions. Do not create a second application or replace established infrastructure without a concrete reason.
+
+Keep one Convinced session and one sales-agent runtime across voice, chat, media, browser tools, identity, and handoff. Voice through ElevenLabs is the primary experience. Chat is the secondary/fallback experience. The host application owns presentation, explicit browser capabilities, and consent. Convinced remains the owner of adaptive sales behavior, campaign context, conversation state, and durable session history.
+
+Do not encode the sales conversation as a rigid finite-state machine. Let current conversation state and Convinced runtime signals determine when a question, proof asset, browser action, or handoff is appropriate. Deterministic code should enforce consent, validation, permissions, identity writes, tool allowlists, analytics privacy, and teardown.
+
+Do not claim the work is complete until the real-browser acceptance checks near the end of this prompt pass. If credentials, access, or a deployed backend block a check, report exactly what remains unverified.
+
+## Inputs
+
+- Convinced organization slug: `<CONVINCED_ORG_SLUG>`
+- Desired presentation: `<MANAGED_V2_OR_HEADLESS>`
+- Mount location or launcher placement: `<MOUNT_LOCATION>`
+- Brand/design-system reference: `<BRAND_OR_DESIGN_SYSTEM_REFERENCE>`
+- Host application development command: `<HOST_APP_DEV_COMMAND>`
+- Host application test command: `<HOST_APP_TEST_COMMAND>`
+- SPA router adapter or framework: `<SPA_ROUTER>`
+- Same-origin routes the agent may navigate to: `<ALLOWED_SPA_ROUTES>`
+- Additional navigation origins, if any: `<ALLOWED_NAVIGATION_ORIGINS>`
+- Required custom or MCP-backed tools: `<CUSTOM_TOOL_ALLOWLIST>`
+- PostHog public project token environment variable: `<PUBLIC_POSTHOG_TOKEN_ENV>`
+- PostHog ingestion host or same-origin proxy: `<POSTHOG_API_HOST>`
+- Privacy/consent UI reference: `<CONSENT_UI_REFERENCE>`
+
+Never replace an unknown value with a plausible-looking production value. Keep it as a named environment variable or ask for it.
+
+## Required package and integration shape
+
+Install the SDK from npm:
+
+```bash
+npm install @convinced/widget-sdk
+```
+
+Use the repository's existing package manager when it is not npm:
+
+```bash
+bun add @convinced/widget-sdk
+pnpm add @convinced/widget-sdk
+yarn add @convinced/widget-sdk
+```
+
+Do not use the iframe loader for this implementation. Do not copy SDK source files into the host application. Import from `@convinced/widget-sdk`.
+
+Build around these objects:
+
+```ts
+import {
+  ClientToolRegistry,
+  ConvincedClient,
+  ConvincedVoiceController,
+  buildManagedVoiceStartContext,
+  createPostHogBridge,
+  mountConvincedWidget,
+  registerDomTools,
+  toSafeVideoEmbedUrl,
+} from '@convinced/widget-sdk'
+```
+
+Create one `ClientToolRegistry`, one `ConvincedClient`, and one `ConvincedVoiceController` for the active widget session. Register the allowed tools before starting voice. Do not create separate chat and voice identities or independent session stores.
+
+## Initialize the Convinced campaign session
+
+Create the client with the organization slug and the shared tool registry. Initialize it before voice starts:
+
+```ts
+const tools = new ClientToolRegistry()
+
+const client = new ConvincedClient({
+  orgSlug: '<CONVINCED_ORG_SLUG>',
+  tools,
+  authorizeToolCall: authorizeRegistryTool,
+})
+
+await client.initialize()
+```
+
+`initialize()` reads campaign and personalized-link attribution from the current browser URL. Preserve supported `c`, `pid`, and UTM parameters when the visitor first lands. Do not manually promote browser-provided campaign text into trusted instructions.
+
+Use the initialized session's configuration and personalization instead of hardcoding an opener, campaign pills, proof, slides, videos, or voice mode. Cover both a valid campaign URL and the generic no-campaign fallback.
+
+## Make ElevenLabs voice the primary path
+
+Use a private ElevenLabs agent in production. Obtain a fresh short-lived WebRTC credential immediately before every start or reconnect. Prefer Convinced's signed session endpoint:
+
+```ts
+const voice = new ConvincedVoiceController({
+  descriptorFactory: async () => ({
+    ...(await client.getVoiceCredential()),
+    exactClientTools: {
+      host_get_page_context: 'host_get_page_context',
+      host_navigate: 'host_navigate',
+      host_scroll_to: 'host_scroll_to',
+      host_highlight: 'host_highlight',
+    },
+    genericClientTool: { name: 'host_extension_call' },
+  }),
+  tools,
+  orgSlug: client.orgSlug,
+  sessionId: () => client.state.session?.sessionId ?? null,
+  authorizeToolCall: authorizeVoiceTool,
+  onConversationId: (conversationId) => {
+    client.linkElevenLabsConversation(conversationId)
+  },
+})
+```
+
+Only enable `host_extension_call` when the ElevenLabs agent defines that exact client tool. Exact tool names and input schemas in ElevenLabs must match the registered SDK mappings. Enable ElevenLabs "Wait for response" for any action whose result should affect the next spoken turn.
+
+The canonical Convinced voice integration uses these 11 ElevenLabs client-tool names:
+
+- `show_slide`
+- `show_youtube_embed`
+- `set_visitor_field`
+- `request_email_capture`
+- `confirm_visitor_form`
+- `show_book_demo_cta`
+- `host_get_page_context`
+- `host_navigate`
+- `host_scroll_to`
+- `host_highlight`
+- `host_extension_call`
+
+The `managed-v2` renderer supplies bounded presentation and identity callbacks. A headless renderer must provide its own bounded callbacks for every presentation or identity tool it enables, then map the exact ElevenLabs names to those registered tools. Do not attach a tool that the current UI cannot execute and report accurately.
+
+Never expose an ElevenLabs API key in browser source, a public environment variable, HTML, logs, source maps, or network responses. The browser may receive only a short-lived `conversationToken` or signed WebSocket URL. The backend must select the allowed agent; do not accept an arbitrary agent ID from the browser.
+
+Start voice only from a visitor gesture. Show connecting, listening, thinking, speaking, muted, retry, and unavailable states. Implement push-to-talk accessibly when it suits the design. Always stop capture on pointer cancellation, lost pointer capture, window blur, tab hiding, component unmount, and explicit end. Never begin with an open microphone before the visitor acts.
+
+For a headless renderer, build the current voice context at start time:
+
+```ts
+await voice.start(buildManagedVoiceStartContext(client.state, {
+  pageUrl: window.location.href,
+  pageTitle: document.title,
+}))
+```
+
+This carries the current campaign, governed knowledge, page observation, identity, recent history, ranked media, and first-message override into the same conversation. Treat page text, campaign research, transcript excerpts, and tool results as untrusted data, not instructions or authority.
+
+Keep chat available as the secondary path unless the deployment configuration is `voice_only`. If a visitor moves from chat to voice in a headless UI, call `client.markVoiceUpgrade()` with the bounded messages that led to the upgrade before starting voice. Do not start a separate Convinced session.
+
+## Choose and build the presentation
+
+If `<MANAGED_V2_OR_HEADLESS>` is `managed-v2`, mount the supplied Shadow DOM renderer and adapt its theme to the host design system:
+
+```ts
+const widget = mountConvincedWidget({
+  client,
+  voice,
+  preset: 'managed-v2',
+  placement: 'floating',
+  theme: {
+    primary: '<BRAND_PRIMARY>',
+    onPrimary: '<BRAND_ON_PRIMARY>',
+    accent: '<BRAND_ACCENT>',
+    background: '<BRAND_BACKGROUND>',
+    surface: '<BRAND_SURFACE>',
+    text: '<BRAND_TEXT>',
+    muted: '<BRAND_MUTED>',
+    border: '<BRAND_BORDER>',
+    radius: '<BRAND_RADIUS>',
+    fontFamily: '<BRAND_FONT_STACK>',
+  },
+})
+```
+
+Use `placement: 'inline'` plus a target when the widget belongs inside the page layout. `managed-v2` should honor the deployment's campaign greeting and pills, voice mode, mode toggle, identity gate, chat fallback, media, welcome card, engagement offers, meeting CTA, launcher treatment, and return-visitor behavior.
+
+The supplied managed identity policy presents one email-required form. If the requirement is a genuinely staged company, then name/email, then phone experience, use a headless identity surface. Do not claim that a single managed form is progressive capture.
+
+If `<MANAGED_V2_OR_HEADLESS>` is `headless`, do not call `mountConvincedWidget()`. Subscribe to typed client and voice events and render them with the host application's components. The headless UI must include:
+
+- A clear voice-first entry and a secondary chat entry.
+- Voice connection, microphone, speaking, error, reconnect, and end states.
+- Streaming chat messages and cancellation/error states.
+- Campaign greeting, campaign pills, suggested enquiries, and generic fallback.
+- Progressive identity surfaces with explicit visitor confirmation.
+- Slides and supported videos with accessible titles and close controls.
+- Pending, approval, success, denial, timeout, and failure states for host tools.
+- A durable demo/handoff surface when no external scheduling URL is configured.
+- Responsive behavior, keyboard navigation, visible focus, reduced motion, readable contrast, and screen-reader labels.
+
+Do not claim pixel parity with every historical hosted launcher. If exact hosted visuals are a requirement, explain that the managed iframe is the exact hosted presentation path. The SDK path provides functional composition and complete headless control.
+
+## Add bounded SPA and DOM tools
+
+All DOM capabilities are off until explicitly enabled. Register only the requested capabilities:
+
+```ts
+registerDomTools(tools, {
+  capabilities: {
+    pageContext: true,
+    navigate: true,
+    scroll: true,
+    highlight: true,
+  },
+  allowedNavigationOrigins: [<EXPLICIT_HTTPS_ORIGINS>],
+  navigate: (url, { replace }) => {
+    // Use the host SPA router. Validate the resolved route against the local
+    // route allowlist before navigating. Do not unload the document.
+    return replace ? appRouter.replace(url) : appRouter.navigate(url)
+  },
+  authorize: authorizeDomAction,
+})
+```
+
+The navigation callback must use the existing SPA router so the signed tool result can return after the route changes. Do not use `location.assign()` as the normal tool path. Restrict navigation to same-origin routes and exact additional HTTPS origins that the product owner approved.
+
+Allow page context only when needed. Never return form values, editable content, hidden content, cookies, storage, authentication state, executable content, or secrets. Use safe, stable selectors for scroll and highlight. Reject broad, invalid, executable, or unknown selectors.
+
+Use both authorization layers:
+
+1. The registry-level `authorizeToolCall` on the client and voice controller.
+2. The action-level `authorize` callback passed to `registerDomTools`.
+
+Read-only context may receive session consent if the privacy policy permits it. Navigation and mutation should be per-call unless the visitor explicitly grants a narrower remembered scope. Keep consent visible and explain the exact action and target.
+
+On every host-router change, including changes not initiated by the agent, update both durable session context and the live voice conversation:
+
+```ts
+await client.updatePage({ url, title })
+
+if (voice.state.status === 'connected') {
+  voice.sendContextualUpdate(
+    `The visitor moved to ${title}: ${url}`,
+    'current-page',
+  )
+}
+```
+
+Do not put sensitive query values or fragments in page context or analytics.
+
+## Add custom or MCP-backed tools safely
+
+Register semantic, narrowly scoped tools such as reading an allowed cart summary or requesting a product-native action. Tool names must begin with `host_` or `client_`. Give every tool a strict input schema, effect classification, consent policy, timeout, bounded result, and live authorization check.
+
+Do not expose arbitrary JavaScript execution, raw database access, unrestricted fetch, generic DOM mutation, or credential-bearing results.
+
+When using `createMcpTools()`:
+
+- Create and authenticate the MCP client outside the SDK.
+- Use an explicit tool allowlist.
+- Keep MCP credentials on a trusted backend unless the provider has a browser-safe OAuth design.
+- Classify each tool as read, navigate, or mutate and choose consent deliberately.
+- Treat MCP output as an untrusted observation.
+- Route the allowed tool through `host_extension_call` only when that gateway exists on the ElevenLabs agent.
+
+## Implement progressive, user-confirmed identity
+
+Support a custom conversation-aware sequence such as:
+
+1. Ask for company when it is contextually useful.
+2. Later show name and email inputs after the visitor has received value or asks for follow-up.
+3. Ask for phone only when it is justified by the requested handoff.
+
+These are presentation stages, not a forced sales script. Let runtime signals and the visitor's intent decide when to reveal them. Explain why each field is requested. Make optional fields visibly optional. Never persist identity inferred by the model, page DOM, PostHog, or an enrichment result as if the visitor confirmed it.
+
+In voice, a `set_visitor_field`-style callback may populate a visible draft from what the visitor just said, and a `request_email_capture`-style callback may reveal the next enquiry. Only a visitor-confirmed form submission may persist by default. If the product supports explicit spoken confirmation, the host must grant a fresh, single-turn authorization through `ConvincedVoiceController.authorizeToolCall` for that exact `confirm_visitor_form` invocation. Never cache that grant as session consent. A model tool call alone is not consent to store PII.
+
+Serialize and await identity writes. Keep one cumulative object of visitor-confirmed fields:
+
+```ts
+import type { VisitorIdentity } from '@convinced/widget-sdk'
+
+let confirmedIdentity: VisitorIdentity = {}
+
+async function saveConfirmedIdentity(patch: VisitorIdentity) {
+  confirmedIdentity = { ...confirmedIdentity, ...patch }
+
+  if (confirmedIdentity.email) {
+    await client.identify(confirmedIdentity)
+  } else {
+    await client.setIdentity(confirmedIdentity)
+  }
+}
+
+await saveConfirmedIdentity({ company: confirmedCompany })
+await saveConfirmedIdentity({ name: confirmedName, email: confirmedEmail })
+await saveConfirmedIdentity({ phone: confirmedPhone })
+```
+
+Use real TypeScript types from the SDK in the implementation. Validate and normalize fields in the UI, preserve the form on network failure, and only show success after the awaited SDK call succeeds.
+
+`setIdentity()` persists partial, session-scoped context without forcing canonical email capture. Once an email is confirmed, `identify()` links the cumulative identity to the durable visitor record. Include earlier confirmed fields in later calls so company, name, email, and phone stay together for the same session.
+
+Treat `submitDemoRequest()` as the final, atomic handoff—not a progressive draft API:
+
+```ts
+client.reportDemoRequestOpened('custom')
+
+const { name, email, company, phone } = confirmedIdentity
+if (!name || !email) throw new Error('Confirmed name and email are required')
+
+const request = await client.submitDemoRequest({
+  name,
+  email,
+  company,
+  phone,
+  context: visitorConfirmedHandoffContext,
+})
+```
+
+Require confirmed name and email before submission. Submit once for that session. An exact retry may return the same opaque request correlation; changed identity in the same session must be treated as a conflict, not silently relabeled. Start a fresh Convinced session if a genuinely different visitor must submit from the same browser page.
+
+Never put PII in URLs, tool arguments/results, page context, console logs, analytics event properties, error reporting payloads, or transcript labels.
+
+## Preserve session history
+
+For `managed-v2`, call and await `widget.endSession()` from an explicit close or finish action. It ends ElevenLabs and persists the linked conversation IDs, merged voice/chat history, confirmed identity, and slide filenames shown by the managed renderer.
+
+For a headless UI:
+
+- Collect voice `message` events in chronological order.
+- Keep chat and voice turns in one ordered session history.
+- Record only exact slide filenames actually shown.
+- Link every ElevenLabs conversation ID with `client.linkElevenLabsConversation()`.
+- End voice, then call and await `client.endSession({ clientMessages, slidesViewed })`.
+
+Do not depend on `beforeunload` or `pagehide` for the only session write; browsers may cancel asynchronous work. Make teardown idempotent and observable. Remove event listeners, stop PostHog replay, end microphone capture, and destroy the widget/client when its owner unmounts.
+
+## Add privacy-preserving PostHog correlation
+
+PostHog is observational. Convinced remains authoritative for identity, history, tool authorization, and session completion.
+
+Use the host application's existing PostHog client. A browser project token is public configuration; a PostHog personal API key is secret and must never enter the browser.
+
+If the application does not already use PostHog and product/privacy owners approve adding it, install `posthog-js` with the application's package manager. Do not create a second PostHog instance when one already exists.
+
+Before analytics consent, keep autocapture, page-view/page-leave capture, performance capture, and replay disabled or opted out. Configure replay to:
+
+- Mask every input.
+- Block identity and transcript containers with `ph-no-capture`.
+- Mask sensitive text with `ph-mask`.
+- Drop request/response bodies and headers.
+- Remove URL query strings and fragments.
+- Respect Do Not Track and the site's consent policy.
+
+After the visitor consents and the Convinced session exists:
+
+```ts
+posthog.opt_in_capturing()
+
+const analytics = createPostHogBridge({ client, posthog })
+const link = await analytics.start()
+```
+
+The bridge correlates PostHog with opaque Convinced session and visitor IDs. Do not configure `identityProperties` unless an approved privacy policy explicitly allows those properties. Never use email, phone, name, or company as the PostHog distinct ID.
+
+Use `analytics.capture()` for low-volume UI, media, navigation, and tool lifecycle events that should also appear in the signed Convinced behavior timeline. Do not duplicate the bridge's `widget.demo_opened`, `widget.demo_submitted`, or `widget.demo_failed` events.
+
+Before calling analytics delivery complete, prove all three layers:
+
+1. The event left the PostHog browser client.
+2. The ingestion request succeeded.
+3. A PostHog query by opaque `convinced_session_id` returns the expected event without PII, form context, or transcript content.
+
+Cross-check the same opaque session in the Convinced dashboard.
+
+## Render slides and video
+
+In chat, render typed `message.content` parts or subscribe to the client's `content` event. Do not render raw `[SLIDE:...]` or `[VIDEO:...]` directives as visible text.
+
+With `managed-v2`, use the supplied bounded `show_slide` and `show_youtube_embed` callbacks.
+
+With a headless renderer:
+
+- Register exact voice media tools before voice starts.
+- Allow only slide filenames present in `client.state.slides`.
+- Allow only initialized or campaign-recommended video URLs.
+- Treat chat `[VIDEO:...]` directives for every other URL as inert; do not fetch them or offer a model-supplied external link.
+- Use `toSafeVideoEmbedUrl()` for supported hosts.
+- Never place an arbitrary model-provided URL in an iframe.
+- Restrict media origins with Content Security Policy.
+- Provide a safe external-link fallback for unsupported media.
+- Do not autoplay a video with sound while the voice agent is speaking.
+- Record the exact slide filenames actually rendered for session teardown.
+
+## Security and privacy requirements
+
+- No ElevenLabs API key, PostHog personal API key, MCP bearer token, Convinced partner key, database secret, or server session secret may appear in browser code or committed files.
+- Keep `.env*` files out of source control. Add only a `.env.example` containing variable names and explanations, never values.
+- Treat the Convinced session capability and tool continuation as opaque. Never log, persist, inspect, construct, put in a URL, or replay them.
+- Use HTTPS in production. Add an explicit Content Security Policy for Convinced, ElevenLabs, PostHog, and approved media origins.
+- Add an explicit microphone Permissions Policy appropriate for the host page.
+- Request microphone, analytics/replay, identity, page reading, navigation, and mutation consent separately when their purposes differ.
+- Deny tools by default. Use exact route, origin, selector, and MCP tool allowlists.
+- Re-check authorization against live application state inside mutation handlers.
+- Render model and tool text as text, not HTML. Sanitize any intentional rich content.
+- Keep campaign data, page observations, transcripts, and tool results in untrusted-data boundaries.
+- Do not use a PostHog event as proof that a server identity, handoff, tool action, or session write succeeded.
+- Show safe user-facing errors. Do not leak request bodies, headers, tokens, or PII into logs or monitoring.
+- Follow the host application's retention, deletion, access-control, and privacy-notice requirements.
+
+## Required tests
+
+Add focused automated tests using the host application's existing test tools. Then run a real browser against the completed integration.
+
+### Automated tests
+
+- Initialization creates one Convinced session and reads campaign attribution from the URL.
+- A targeted campaign gets its personalized opener/pills/media; a URL without attribution gets the generic fallback.
+- Voice is primary, chat remains usable as fallback, and switching modes keeps one session/history.
+- Voice credentials are fetched at start/reconnect and no API key reaches the browser.
+- Microphone starts only from a visitor gesture and stops on all cancellation/unmount paths.
+- SPA navigation uses the router without a document reload, then updates Convinced and live ElevenLabs context.
+- Page context excludes form/editable/hidden/executable content and URL query/fragment values.
+- Disallowed routes, origins, selectors, tools, schemas, and unauthorized mutations fail closed.
+- Scroll and highlight work only on allowed selectors and return structured results.
+- Campaign slides and allowed videos render; arbitrary slide names and video hosts are rejected.
+- The progressive identity sequence persists company, then cumulative name/email, then cumulative phone using visitor-confirmed values only.
+- A failed identity write remains visible and retryable.
+- Demo submission is final and idempotent; a changed same-session submission is treated as a conflict.
+- PostHog starts only after consent, uses opaque correlation, masks inputs, and emits no PII/transcript properties.
+- Explicit teardown persists combined history, linked ElevenLabs conversation IDs, identity, and exact shown slides once.
+- Keyboard navigation, focus states, reduced motion, labels, mobile layout, and color contrast meet the host application's accessibility bar.
+
+### Real-browser acceptance
+
+Use a private disposable or approved ElevenLabs agent with a real or browser-fed microphone. A text simulation is useful but is not final proof.
+
+Verify and capture evidence for:
+
+1. Recognized visitor speech and audible ElevenLabs output.
+2. A voice-driven same-document SPA route change.
+3. Voice-driven scrolling and highlighting of an allowed element.
+4. A permitted custom or MCP-backed tool and a denied tool/action.
+5. A real campaign-specific slide and one supported video path.
+6. Progressive company, name/email, and phone capture with the same Convinced session.
+7. A final handoff/demo request linked to the confirmed identity.
+8. Voice-to-chat and chat-to-voice continuity without a new session.
+9. Successful PostHog ingestion and a query by opaque Convinced session ID with no PII.
+10. The corresponding session in the Convinced dashboard with merged history, identity, tool activity, media, and ElevenLabs conversation correlation.
+11. Session end followed by a return visit when return-visitor behavior is enabled.
+12. Mobile, keyboard, reduced-motion, microphone-denied, analytics-denied, network-failure, and voice-unavailable fallbacks.
+
+## Deliverables
+
+Return:
+
+- The implemented widget and any small server endpoint required for short-lived voice credentials.
+- A concise integration README covering configuration, consent, local development, and production setup.
+- A `.env.example` containing names only.
+- Automated tests and their results.
+- Real-browser evidence separated into voice, chat, tools, media, identity/history, PostHog, and security results.
+- A list of anything that could not be verified, including the exact missing access or external condition.
+
+Do not mark the integration finished because it compiles or because an ElevenLabs text simulation passed. Mark it finished only after the relevant automated checks and real-browser acceptance paths pass.

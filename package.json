@@ -1,0 +1,87 @@
+{
+  "name": "@convinced/widget-sdk",
+  "version": "0.1.0",
+  "description": "Voice-first, headless, and default browser UI SDK for Convinced widgets.",
+  "homepage": "https://github.com/Get-Convinced/convinced-widget-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/Get-Convinced/convinced-widget-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Get-Convinced/convinced-widget-sdk.git"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "browser": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/convinced-widget.global.js",
+  "jsdelivr": "./dist/convinced-widget.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "examples/vanilla",
+    "examples/voice-spa",
+    "examples/custom-brand",
+    "examples/managed-parity",
+    "examples/shared",
+    "AGENT_BUILD_PROMPT.txt",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "example": "bun run examples/vanilla/server.ts",
+    "example:voice": "bun run examples/voice-spa/server.ts",
+    "example:custom": "bun run examples/custom-brand/server.ts",
+    "example:managed": "bun run examples/managed-parity/server.ts",
+    "example:real": "bun run examples/real-org-lab/server.ts",
+    "test:package": "bun run scripts/test-package.ts",
+    "check": "bun run typecheck && bun test && bun run build && bun run test:package",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "bun run check"
+  },
+  "workspaces": [
+    "examples/*"
+  ],
+  "keywords": [
+    "convinced",
+    "voice-widget",
+    "elevenlabs",
+    "chat-widget",
+    "sales-agent",
+    "browser-tools",
+    "mcp"
+  ],
+  "author": "Convinced",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "dependencies": {
+    "@elevenlabs/client": "^1.15.0"
+  },
+  "packageManager": "bun@1.1.13",
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "esbuild": "^0.25.0",
+    "linkedom": "^0.18.13",
+    "posthog-js": "^1.364.5",
+    "typescript": "^5.7.0"
+  }
+}
