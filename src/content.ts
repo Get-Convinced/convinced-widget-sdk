@@ -14,8 +14,20 @@ export interface ParseAssistantContentOptions {
   videos?: Array<Pick<RecommendedVideo, 'url' | 'title'>>
 }
 
-const MEDIA_DIRECTIVE = /\[(SLIDE|VIDEO):([^\]]+)\]/gi
-const PILLS_DIRECTIVE = /\[PILLS:[^\]]*\]/gi
+const SLIDE_DIRECTIVE = 1
+const VIDEO_DIRECTIVE = 2
+const PILLS_DIRECTIVE = 4
+const MEDIA_DIRECTIVES = SLIDE_DIRECTIVE | VIDEO_DIRECTIVE
+const DIRECTIVE_PREFIX_LENGTH = '[SLIDE:'.length
+
+type AssistantDirectiveKind = 'SLIDE' | 'VIDEO' | 'PILLS'
+
+interface AssistantDirectiveMatch {
+  body: string
+  end: number
+  index: number
+  kind: AssistantDirectiveKind
+}
 
 export function parseAssistantContent(
   text: string,
@@ -24,25 +36,37 @@ export function parseAssistantContent(
   const parts: MessageContentPart[] = []
   let cursor = 0
 
-  for (const match of text.matchAll(MEDIA_DIRECTIVE)) {
-    const index = match.index ?? 0
-    pushText(parts, text.slice(cursor, index).replace(PILLS_DIRECTIVE, ''))
-    const kind = match[1]?.toUpperCase()
-    const body = match[2]?.trim() ?? ''
+  let match = findAssistantDirective(text, cursor, MEDIA_DIRECTIVES)
+  while (match) {
+    pushText(parts, removeAssistantDirectives(text.slice(cursor, match.index), PILLS_DIRECTIVE))
+    const body = match.body.trim()
+    const kind = match.kind
     if (kind === 'SLIDE' && body) parts.push(resolveSlide(body, options))
     if (kind === 'VIDEO' && body) {
       const video = resolveVideo(body, options)
       if (video) parts.push(video)
     }
-    cursor = index + match[0].length
+    cursor = match.end
+    match = findAssistantDirective(text, cursor, MEDIA_DIRECTIVES)
   }
 
-  pushText(parts, text.slice(cursor).replace(PILLS_DIRECTIVE, ''))
+  pushText(parts, removeAssistantDirectives(text.slice(cursor), PILLS_DIRECTIVE))
   return parts.length > 0 ? parts : [{ type: 'text', text: '' }]
 }
 
 export function stripAssistantDirectives(text: string): string {
-  return text.replace(MEDIA_DIRECTIVE, '').replace(PILLS_DIRECTIVE, '').replace(/\n{3,}/g, '\n\n').trim()
+  return removeAssistantDirectives(
+    removeAssistantDirectives(text, MEDIA_DIRECTIVES),
+    PILLS_DIRECTIVE,
+  ).replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** Internal helper shared with the managed widget's return-topic sanitizer. */
+export function stripVideoAndPillsDirectives(text: string): string {
+  return removeAssistantDirectives(
+    removeAssistantDirectives(text, VIDEO_DIRECTIVE),
+    PILLS_DIRECTIVE,
+  )
 }
 
 export function toSafeVideoEmbedUrl(value: string): string | undefined {
@@ -121,6 +145,70 @@ function resolveVideo(
 function pushText(parts: MessageContentPart[], value: string): void {
   const text = value.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').trim()
   if (text) parts.push({ type: 'text', text })
+}
+
+function findAssistantDirective(
+  text: string,
+  fromIndex: number,
+  allowedKinds: number,
+): AssistantDirectiveMatch | null {
+  let index = text.indexOf('[', fromIndex)
+  while (index >= 0) {
+    const kind = directiveKindAt(text, index, allowedKinds)
+    if (kind) {
+      const bodyStart = index + DIRECTIVE_PREFIX_LENGTH
+      const closingBracket = text.indexOf(']', bodyStart)
+      // With no later closing bracket, no directive at a later opening bracket
+      // can match either. Returning immediately keeps malformed input linear.
+      if (closingBracket < 0) return null
+      if (kind === 'PILLS' || closingBracket > bodyStart) {
+        return {
+          body: text.slice(bodyStart, closingBracket),
+          end: closingBracket + 1,
+          index,
+          kind,
+        }
+      }
+    }
+    index = text.indexOf('[', index + 1)
+  }
+  return null
+}
+
+function directiveKindAt(
+  text: string,
+  index: number,
+  allowedKinds: number,
+): AssistantDirectiveKind | null {
+  if ((allowedKinds & SLIDE_DIRECTIVE) !== 0 && hasAsciiPrefix(text, index, '[SLIDE:')) return 'SLIDE'
+  if ((allowedKinds & VIDEO_DIRECTIVE) !== 0 && hasAsciiPrefix(text, index, '[VIDEO:')) return 'VIDEO'
+  if ((allowedKinds & PILLS_DIRECTIVE) !== 0 && hasAsciiPrefix(text, index, '[PILLS:')) return 'PILLS'
+  return null
+}
+
+function hasAsciiPrefix(text: string, index: number, upperCasePrefix: string): boolean {
+  if (index + upperCasePrefix.length > text.length) return false
+  for (let offset = 0; offset < upperCasePrefix.length; offset += 1) {
+    const expected = upperCasePrefix.charCodeAt(offset)
+    const actual = text.charCodeAt(index + offset)
+    if (actual === expected) continue
+    if (expected < 65 || expected > 90 || actual !== expected + 32) return false
+  }
+  return true
+}
+
+function removeAssistantDirectives(text: string, allowedKinds: number): string {
+  let match = findAssistantDirective(text, 0, allowedKinds)
+  if (!match) return text
+  const parts: string[] = []
+  let cursor = 0
+  while (match) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index))
+    cursor = match.end
+    match = findAssistantDirective(text, cursor, allowedKinds)
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return parts.join('')
 }
 
 function safeVideoId(value: string): string | undefined {

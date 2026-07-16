@@ -115,10 +115,16 @@ export function parseSseBlock(block: string): WidgetSseEvent | typeof SSE_DONE |
 }
 
 export function normalizeApiBase(value: string): string {
-  const base = value.replace(/\/+$/, '')
+  const base = removeTrailingSlashes(value)
   const url = new URL(base)
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error('apiBase must use http or https.')
   }
-  return url.href.replace(/\/$/, '')
+  return url.href.endsWith('/') ? url.href.slice(0, -1) : url.href
+}
+
+function removeTrailingSlashes(value: string): string {
+  let end = value.length
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1
+  return end === value.length ? value : value.slice(0, end)
 }

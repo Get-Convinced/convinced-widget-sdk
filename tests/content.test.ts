@@ -71,4 +71,28 @@ describe('assistant media content', () => {
     )
     expect(notInitialized).toEqual([{ type: 'text', text: '' }])
   })
+
+  test('preserves directive precedence and case-insensitive marker semantics', () => {
+    expect(stripAssistantDirectives('[PILLS:before[slide:deck.pdf]]')).toBe('')
+    expect(parseAssistantContent('[PILLS:before[slide:deck.pdf]]')).toEqual([
+      { type: 'text', text: '[PILLS:before' },
+      { type: 'slide', filename: 'deck.pdf' },
+      { type: 'text', text: ']' },
+    ])
+    expect(stripAssistantDirectives('before [PiLlS:] after')).toBe('before  after')
+    expect(stripAssistantDirectives('[SLIDE:]')).toBe('[SLIDE:]')
+    expect(stripAssistantDirectives('[ſLIDE:deck.pdf]')).toBe('[ſLIDE:deck.pdf]')
+  })
+
+  test('handles long malformed directive prefixes within a fixed time bound', () => {
+    const unclosedSlides = '[slide:\\'.repeat(50_000)
+    const unclosedPills = '[pills:'.repeat(50_000)
+    const startedAt = performance.now()
+
+    expect(parseAssistantContent(unclosedSlides)).toEqual([
+      { type: 'text', text: unclosedSlides },
+    ])
+    expect(stripAssistantDirectives(unclosedPills)).toBe(unclosedPills)
+    expect(performance.now() - startedAt).toBeLessThan(1_000)
+  }, 2_000)
 })

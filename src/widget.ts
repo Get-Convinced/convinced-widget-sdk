@@ -1,4 +1,8 @@
-import { isSafeHttpUrl, toSafeVideoEmbedUrl } from './content.js'
+import {
+  isSafeHttpUrl,
+  stripVideoAndPillsDirectives,
+  toSafeVideoEmbedUrl,
+} from './content.js'
 import { normalizeBusinessEmail } from './business-email.js'
 import type { ConvincedClient } from './client.js'
 import { buildManagedVoiceStartContext } from './voice-context.js'
@@ -2400,9 +2404,10 @@ function isReturnVisitWithinWindow(value: unknown, configuredDays: number | unde
 }
 
 function sanitizeReturnVisitorTopic(rawTopic: string, maximum = 80): string {
-  const cleaned = rawTopic
-    .replace(/\[VIDEO:[^\]]+\]/gi, '')
-    .replace(/\[PILLS:[^\]]+\]/gi, '')
+  // This value originated in session history. Bound it before any regular
+  // expression so later formatting work has a fixed CPU and memory ceiling.
+  const boundedTopic = rawTopic.slice(0, 4_096)
+  const cleaned = stripVideoAndPillsDirectives(boundedTopic)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/[#>_~`\[\]]/g, '')

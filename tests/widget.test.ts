@@ -1483,6 +1483,40 @@ describe('default Shadow DOM widget', () => {
     widget.destroy()
   })
 
+  test('bounds malformed server return topics before sanitizing them', async () => {
+    const malformedTopic = '[VIDEO:'.repeat(100_000)
+    const client = await managedFeatureClient({
+      orgName: 'Signal Foundry',
+      orgSlug: 'demo',
+      voiceEnabled: false,
+      voiceMode: 'text_only',
+      slidesEnabled: false,
+      suggestedQuestions: [],
+      returnVisitorEnabled: true,
+      returnVisitorDays: 7,
+      returnVisitorGreeting: 'Welcome back, {name}. Continue {topic}?',
+    }, [], {
+      returnVisitor: {
+        previousTopics: [malformedTopic],
+        lastSessionDate: new Date().toISOString(),
+      },
+    })
+    const startedAt = performance.now()
+    const widget = mountConvincedWidget({
+      client,
+      target: '#widget',
+      placement: 'inline',
+      autoInitialize: false,
+    })
+
+    const message = required(widget.shadowRoot, '[data-messages]').textContent ?? ''
+    expect(message).toContain('Welcome back, there. Continue VIDEO:VIDEO:')
+    expect(message).not.toContain('[')
+    expect(message.length).toBeLessThan(200)
+    expect(performance.now() - startedAt).toBeLessThan(1_000)
+    widget.destroy()
+  }, 2_000)
+
   test('keeps ai-decides offers adaptive while retaining the configured safe meeting CTA', async () => {
     const client = await managedFeatureClient({
       orgName: 'Signal Foundry',
@@ -1810,6 +1844,7 @@ async function widgetClient(options: {
 async function managedFeatureClient(
   config: JsonObject,
   chatBodies: JsonObject[] = [],
+  sessionFields: JsonObject = {},
 ): Promise<ConvincedClient> {
   const client = new ConvincedClient({
     orgSlug: 'demo',
@@ -1817,7 +1852,7 @@ async function managedFeatureClient(
     fetch: (async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       if (url.pathname.endsWith('/session')) {
-        return Response.json({ sessionId: 'session_managed_features', config })
+        return Response.json({ sessionId: 'session_managed_features', ...sessionFields, config })
       }
       if (url.pathname.endsWith('/chat')) {
         chatBodies.push(JSON.parse(String(init.body)) as JsonObject)

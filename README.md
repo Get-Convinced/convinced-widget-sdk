@@ -407,7 +407,7 @@ Self-host `dist/convinced-widget.global.js`, or load the exact published version
 ```html
 <script
   src="https://cdn.jsdelivr.net/npm/@convinced/widget-sdk@0.1.0/dist/convinced-widget.global.js"
-  integrity="sha384-xlvFdJpBKLYfbDSrx/eR/TPPZ+EvlYjyLCns/W9QyPXxInTR2ZzFWp2oRu4yYy4E"
+  integrity="sha384-XjRavyNaP8UvXWpOnEledOkpzyp7mcrvuR9dOgeDYP0D/yEYzkAVR8VkFLngErxQ"
   crossorigin="anonymous"
 ></script>
 <script>

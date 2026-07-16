@@ -33,6 +33,20 @@ describe('ConvincedClient transport', () => {
     expect(events).toEqual(['user:Hello', 'assistant:Hello from Convinced.'])
   })
 
+  test('parses long malformed directives received over SSE within a fixed time bound', async () => {
+    const malformedAssistantText = '[SLIDE:\\'.repeat(20_000)
+    const client = await sessionClient(async () => sse([
+      { delta: malformedAssistantText },
+    ]))
+    const startedAt = performance.now()
+
+    const response = await client.sendMessage('Show the proof')
+
+    expect(response.text).toBe(malformedAssistantText)
+    expect(response.content).toEqual([{ type: 'text', text: malformedAssistantText }])
+    expect(performance.now() - startedAt).toBeLessThan(1_000)
+  }, 2_000)
+
   test('removes a typed event listener with off()', async () => {
     const client = await sessionClient(async () => sse([{ delta: 'Done.' }]))
     const messages: string[] = []
