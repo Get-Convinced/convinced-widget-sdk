@@ -95,4 +95,17 @@ describe('assistant media content', () => {
     expect(stripAssistantDirectives(unclosedPills)).toBe(unclosedPills)
     expect(performance.now() - startedAt).toBeLessThan(1_000)
   }, 2_000)
+
+  test('normalizes long horizontal-whitespace runs in linear time', () => {
+    const tabs = '\t'.repeat(100_000)
+    const startedAt = performance.now()
+
+    expect(parseAssistantContent(`before${tabs}after`)).toEqual([
+      { type: 'text', text: `before${tabs}after` },
+    ])
+    expect(parseAssistantContent(`before${tabs}\n${tabs}after`)).toEqual([
+      { type: 'text', text: 'before\nafter' },
+    ])
+    expect(performance.now() - startedAt).toBeLessThan(1_000)
+  }, 2_000)
 })

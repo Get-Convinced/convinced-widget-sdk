@@ -143,8 +143,40 @@ function resolveVideo(
 }
 
 function pushText(parts: MessageContentPart[], value: string): void {
-  const text = value.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').trim()
+  const text = normalizeLineWhitespace(value).trim()
   if (text) parts.push({ type: 'text', text })
+}
+
+function normalizeLineWhitespace(value: string): string {
+  const parts: string[] = []
+  let cursor = 0
+  let segmentStart = 0
+
+  while (cursor < value.length) {
+    const code = value.charCodeAt(cursor)
+    if (code !== 32 && code !== 9) {
+      cursor += 1
+      continue
+    }
+
+    const whitespaceStart = cursor
+    while (cursor < value.length) {
+      const whitespaceCode = value.charCodeAt(cursor)
+      if (whitespaceCode !== 32 && whitespaceCode !== 9) break
+      cursor += 1
+    }
+
+    const followsNewline = whitespaceStart > 0 && value.charCodeAt(whitespaceStart - 1) === 10
+    const precedesNewline = cursor < value.length && value.charCodeAt(cursor) === 10
+    if (!followsNewline && !precedesNewline) continue
+
+    if (whitespaceStart > segmentStart) parts.push(value.slice(segmentStart, whitespaceStart))
+    segmentStart = cursor
+  }
+
+  if (segmentStart === 0) return value
+  if (segmentStart < value.length) parts.push(value.slice(segmentStart))
+  return parts.join('')
 }
 
 function findAssistantDirective(
