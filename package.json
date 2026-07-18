@@ -82,6 +82,6 @@
     "esbuild": "^0.25.0",
     "linkedom": "^0.18.13",
     "posthog-js": "^1.364.5",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }
