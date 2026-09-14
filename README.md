@@ -6,11 +6,15 @@ The SDK is a thin browser adapter over the Convinced widget API. The Convinced r
 
 ## Build it with a coding agent
 
+Customer administrators can read and persistently edit their SDK agent's ElevenLabs prompt through `ConvincedAgentAdmin`. See [prompt management setup](docs/agent-prompt-management.md) for the authenticated backend, live-branch selection and SDK example.
+
 Copy [`AGENT_BUILD_PROMPT.txt`](https://raw.githubusercontent.com/Get-Convinced/convinced-widget-sdk/main/AGENT_BUILD_PROMPT.txt) into your coding agent while it has access to your web application. The prompt covers a voice-first ElevenLabs integration, custom UI, campaigns, progressive user-confirmed identity, session history, PostHog, SPA/DOM tools, MCP, slides and video, consent, security, and real-browser acceptance.
 
 Read the [Build with a coding agent guide](https://docs.getconvinced.ai/guides/widget-sdk/build-with-an-agent) for the short setup flow. The prompt contains placeholders only; do not add credentials or personal data to it.
 
 ## Install
+
+Experimental WebMCP support and customer prompt management are available in `0.1.1-webmcp.2`. See the [WebMCP integration and test handoff](docs/webmcp-handoff.md) for the website registration adapter, generic agent bridge, browser requirements and measured limitations.
 
 ```bash
 npm install @convinced/widget-sdk

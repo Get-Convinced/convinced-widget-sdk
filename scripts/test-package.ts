@@ -71,12 +71,16 @@ try {
   await writeFile(join(consumer, 'consumer.ts'), `
 import {
   ConvincedClient,
+  ConvincedAgentAdmin,
   type WidgetConfig,
 } from '@convinced/widget-sdk'
 
 const config: WidgetConfig = { orgName: 'Example', orgSlug: 'example' }
 const client = new ConvincedClient({ orgSlug: config.orgSlug })
 void client.state
+const admin = new ConvincedAgentAdmin({ orgSlug: config.orgSlug, agentId: 'agent_example', apiBase: 'https://app.example' })
+void admin.getPrompt
+void admin.updatePrompt
 `)
 
   for (const [name, compilerOptions] of Object.entries({

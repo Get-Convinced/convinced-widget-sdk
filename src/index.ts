@@ -1,4 +1,10 @@
 export {
+  ConvincedAgentAdmin,
+  type ConvincedAgentAdminOptions,
+  type AgentPrompt,
+  type UpdateAgentPromptInput,
+} from './agent-admin.js'
+export {
   ConvincedClient,
   ConvincedApiError,
   ConvincedSdkError,
@@ -74,6 +80,15 @@ export {
   type McpToolLike,
   type McpToolPolicy,
 } from './tools/mcp.js'
+export {
+  createWebMcpBridge,
+  getWebMcpModelContext,
+  publishRegistryToWebMcp,
+  WEBMCP_VOICE_BINDINGS,
+  type WebMcpModelContext,
+  type WebMcpRegisteredTool,
+  type WebMcpBridgeOptions,
+} from './tools/webmcp.js'
 export {
   mountConvincedWidget,
   type IdentityFieldName,

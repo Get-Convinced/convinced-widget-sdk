@@ -699,7 +699,8 @@ export class ConvincedVoiceController {
     this.events.emit('client_tool_result', resultEvent)
     safeCall(() => this.options.onClientToolResult?.(resultEvent))
     const registered = registry.get(registryToolName)
-    const source = registered?.constraints?.adapter === 'mcp' ? 'mcp' : 'host_tool'
+    const adapter = registered?.constraints?.adapter
+    const source = adapter === 'mcp' || adapter === 'webmcp' ? adapter : 'host_tool'
     return JSON.stringify(toolObservation(source, result))
   }
 
@@ -805,7 +806,7 @@ function assertInitContextBudget(
 }
 
 function toolObservation(
-  source: 'host_tool' | 'mcp',
+  source: 'host_tool' | 'mcp' | 'webmcp',
   observation: unknown,
 ): JsonObject {
   return {
