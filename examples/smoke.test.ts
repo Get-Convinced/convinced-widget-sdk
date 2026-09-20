@@ -75,7 +75,7 @@ describe('SDK browser examples', () => {
       }
 
       const app = await fetch(`${base}/app.js`).then((response) => response.text())
-      expect(app).toContain('ConvincedVoiceController')
+      expect(app).toMatch(/ConvincedVoiceController|createVoiceController/)
       expect(app).toContain('ClientToolRegistry')
     }, 10_000)
   }

@@ -12,7 +12,7 @@ Use this in an authenticated admin application. Do not register prompt administr
 import { ConvincedAgentAdmin } from '@convinced/widget-sdk';
 
 const agent = new ConvincedAgentAdmin({
-  orgSlug: 'enmovil',
+  orgSlug: 'your-org',
   agentId: 'THE_SAME_AGENT_ID_USED_BY_THE_VOICE_SDK',
   apiBase: window.location.origin,
 });
@@ -38,7 +38,7 @@ Deploy the accompanying Convinced app changes:
 - PATCH body: `{ systemPrompt?, firstMessage?, expectedRevision }`. At least one editable field is required; omitted fields are preserved. An empty `firstMessage` is allowed.
 - Result: `{ source: 'elevenlabs', agentId, systemPrompt, firstMessage, revision, branchId, versionId, trafficPercentage }`.
 
-Both endpoints require an authenticated organization member with the `ADMIN` role. The server checks ownership using `AgentDeployment.voiceConfig.elevenlabsAgentId` or `externalAgentId`. Provision the dedicated SDK agent's ownership binding before use; knowing a public agent ID does not grant access. Agents bound to multiple organizations are refused. Keep the dedicated Transformation agent distinct from the production widget's agent; do not replace the latter's binding to pass authorization.
+Both endpoints require an authenticated organization member with the `ADMIN` role. The server checks ownership using `AgentDeployment.voiceConfig.elevenlabsAgentId` or `externalAgentId`. Provision the dedicated SDK agent's ownership binding before use; knowing a public agent ID does not grant access. Agents bound to multiple organizations are refused. Keep dedicated SDK agents distinct from an organization's default widget agent; do not replace an unrelated binding to pass authorization.
 
 The server reads `ELEVEN_API_KEY` or `ELEVENLABS_API_KEY`, with permission to read agents/branches and update the customer agents. Nothing returns that key to the SDK. GET reads ElevenLabs directly. This API does not maintain a second prompt store in Convinced; successful saves use the provider's version history.
 
@@ -61,7 +61,7 @@ HTTP 502 can mean the provider applied an update but verification failed. Inspec
 - Real first-message persistence: opening-only, combined prompt/opener and empty-opener changes passed on a temporary private ElevenLabs agent; it was deleted with HTTP 204. Evidence: `artifacts/webmcp/first-message-live-results.json`.
 - Real Enmovil read: discovered the branch receiving 100% of traffic and read its prompt. Main received 0%. No Enmovil production prompt was edited.
 
-The API is implemented locally, not deployed by this handoff. The local ownership database was unavailable at `localhost:5433`, so the authenticated production end-to-end path and dedicated agent ownership binding still need rollout verification.
+The management API is deployed. Each dedicated agent still requires a server-controlled ownership binding and authenticated organization ADMIN access; test those for the agent your integration selects. Public visitor credentials do not provide management access.
 
 References: [ElevenLabs update agent](https://elevenlabs.io/docs/api-reference/agents/update), [agent versioning](https://elevenlabs.io/docs/eleven-agents/operate/versioning), [official OpenAPI schema](https://api.elevenlabs.io/openapi.json).
 

@@ -15,6 +15,7 @@ const endVoice = document.querySelector('#end-voice')
 const traceList = document.querySelector('#trace-list')
 const traceEntries = []
 let voice = null
+let sessionEnded = false
 let identityWasOffered = false
 
 function trace(label, detail = '') {
@@ -160,7 +161,7 @@ function renderCampaign() {
 }
 
 function buildVoiceController() {
-  return new SDK.ConvincedVoiceController({
+  return client.createVoiceController({
     descriptor: {
       agentId: 'mock-morrow-agent',
       dynamicVariables: {
@@ -176,8 +177,6 @@ function buildVoiceController() {
       },
     },
     tools,
-    orgSlug: client.orgSlug,
-    sessionId: () => client.state.session?.sessionId ?? null,
     conversationFactory: createMockConversationFactory({
       firstMessage: client.state.session.personalization?.firstMessage,
       destinations: {
@@ -210,7 +209,6 @@ function buildVoiceController() {
       voiceCaption.textContent = `${source === 'user' ? 'You' : 'Concierge'}: ${message}`
       trace(`Voice ${source}`, message)
     },
-    onConversationId: (id) => { client.linkElevenLabsConversation(id); trace('Voice linked', id) },
     onClientToolCall: ({ registryToolName }) => trace('Voice tool request', registryToolName),
     onClientToolResult: ({ registryToolName, result }) => trace(`Voice tool ${result.ok ? 'done' : 'failed'}`, registryToolName),
     onError: (error) => trace('Voice error', error.message),
@@ -224,13 +222,14 @@ document.querySelector('#show-identity').addEventListener('click', () => { ident
 
 startVoice.addEventListener('click', async () => {
   openConcierge()
+  if (sessionEnded) { await client.renewSession(); sessionEnded = false }
   await client.markVoiceUpgrade(client.state.messages.map(({ role, text: content }) => ({ role, content })))
   await voice.start()
 })
 voiceProof.addEventListener('click', () => voice.sendUserMessage('Show me the customer proof and room story.'))
 endVoice.addEventListener('click', async () => {
-  await voice.end()
   await client.endSession()
+  sessionEnded = true
   trace('Session ended', client.state.session?.sessionId ?? '')
 })
 

@@ -20,6 +20,7 @@ const initialUrl = new URL(window.location.href)
 const requestedRealVoice = initialUrl.searchParams.get('voice') === 'real'
 const traceEntries = []
 let voice = null
+let sessionEnded = false
 let muted = false
 
 function trace(label, detail = '') {
@@ -154,11 +155,9 @@ function buildVoiceController() {
     },
   }
 
-  return new SDK.ConvincedVoiceController({
+  return client.createVoiceController({
     descriptor,
     tools,
-    orgSlug: client.orgSlug,
-    sessionId: client.state.session.sessionId,
     ...(useReal ? {} : {
       conversationFactory: createMockConversationFactory({
         firstMessage: client.state.session?.personalization?.firstMessage,
@@ -201,15 +200,12 @@ function buildVoiceController() {
     },
     onClientToolCall: ({ registryToolName, arguments: args }) => trace('Voice requested tool', `${registryToolName} ${JSON.stringify(args)}`),
     onClientToolResult: ({ registryToolName, result }) => trace(`Voice tool ${result.ok ? 'completed' : 'failed'}`, registryToolName),
-    onConversationId: (conversationId) => {
-      client.linkElevenLabsConversation(conversationId)
-      trace('Conversation linked', conversationId)
-    },
   })
 }
 
 startButton.addEventListener('click', async () => {
   try {
+    if (sessionEnded) { await client.renewSession(); sessionEnded = false }
     await client.markVoiceUpgrade(client.state.messages.map(({ role, text: content }) => ({ role, content })))
     await voice.start()
   } catch (error) {
@@ -227,8 +223,8 @@ muteButton.addEventListener('click', () => {
 })
 endButton.addEventListener('click', async () => {
   try {
-    await voice.end()
     await client.endSession()
+    sessionEnded = true
     trace('Convinced session ended', client.state.session?.sessionId ?? '')
   } catch (error) {
     trace('Session end failed', error instanceof Error ? error.message : String(error))

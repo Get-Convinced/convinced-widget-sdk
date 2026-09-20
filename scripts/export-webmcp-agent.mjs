@@ -7,11 +7,20 @@ const bridge = createWebMcpBridge({
   modelContext: { getTools: async () => [], executeTool: async () => null },
   origin: 'https://example.invalid', authorize: () => false,
 })
+// The provider accepts a subset of JSON Schema. SDK execution still enforces
+// the full schema, including array bounds and rejection of unknown properties.
+function providerSchema(value) {
+  if (Array.isArray(value)) return value.map(providerSchema)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !['additionalProperties', 'minItems', 'maxItems'].includes(key))
+    .map(([key, child]) => [key, providerSchema(child)]))
+}
 const tools = bridge.tools.map(tool => ({ tool_config: {
   type: 'client',
   name: Object.entries(WEBMCP_VOICE_BINDINGS).find(([, name]) => name === tool.name)[0],
   description: tool.description,
-  parameters: tool.inputSchema,
+  parameters: providerSchema(tool.inputSchema),
   expects_response: true,
   execution_mode: 'immediate',
   response_timeout_secs: 20,
