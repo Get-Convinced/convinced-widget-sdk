@@ -1,6 +1,6 @@
 # WebMCP SDK experiment — Enovate handoff
 
-Tested 14 September 2026. Experimental package: `@convinced/widget-sdk@0.1.1-webmcp.2` (adds customer prompt administration to the `.0` browser experiment).
+Historical page-action trials below were tested on 14 September 2026 with `0.1.1-webmcp.2`. The updated session integration example targets the unpublished `0.1.1-webmcp.3` candidate and matching backend. See [voice session ownership](voice-session-ownership.md) for migration, persistence limits and rollout requirements. On 21 September the `.3` native Chrome fixture passed all five checks, including automatic voice capture/finalization, with simulated provider transport.
 
 ## Decision
 
@@ -47,10 +47,12 @@ Prefer complete user actions over exposing every UI setter. The Enmovil trial ex
 
 For customer-controlled, persistent prompt edits, use [the authenticated agent management API](agent-prompt-management.md). It updates the SDK agent's active ElevenLabs branch and verifies provider persistence; it is separate from visitor-callable WebMCP tools.
 
+The example below assumes your application supplies `applicationPolicy.authorize(tool, input)`. It is a policy hook, not a built-in SDK function.
+
 ```ts
 import {
   getWebMcpModelContext, createWebMcpBridge,
-  ClientToolRegistry, ConvincedVoiceController, WEBMCP_VOICE_BINDINGS,
+  ClientToolRegistry, ConvincedClient, WEBMCP_VOICE_BINDINGS,
 } from '@convinced/widget-sdk';
 
 const modelContext = getWebMcpModelContext();
@@ -63,19 +65,18 @@ const bridge = createWebMcpBridge({
   authorize: (tool, input) => applicationPolicy.authorize(tool, input),
   argumentEncoding: 'json-string', // tested Chrome 152 interface
 });
-const voice = new ConvincedVoiceController({
-  orgSlug: 'your-org',
+const client = new ConvincedClient({ orgSlug: 'your-org' });
+await client.initialize({ loadMedia: false });
+const voice = client.createVoiceController({
   tools: new ClientToolRegistry(bridge.tools),
-  descriptor: {
-    agentId: 'YOUR_ISOLATED_WEBMCP_AGENT_ID',
-    exactClientTools: WEBMCP_VOICE_BINDINGS,
-    genericClientTool: false,
-  },
+  exactClientTools: WEBMCP_VOICE_BINDINGS,
+  genericClientTool: false,
 });
-// On teardown: await voice.end(); bridge.dispose();
+// On a visitor gesture: await voice.start();
+// On explicit session close: await client.endSession(); bridge.dispose();
 ```
 
-Configure those two client-tool schemas once in an isolated ElevenLabs agent. Run `bun run export:webmcp:agent` to generate `artifacts/webmcp/elevenlabs-tools.json` and `agent-prompt.txt` directly from the SDK definitions. The exporter does not contact ElevenLabs. Upload the standalone client tools, attach their IDs to the experimental agent, and use the supplied generic prompt; the existing Enmovil prompt names legacy tools and cannot simply be reused unchanged.
+Convinced must configure the session to select the intended isolated agent, with those two client-tool schemas. Do not assume the organization default already uses WebMCP. Run `bun run export:webmcp:agent` to generate `artifacts/webmcp/elevenlabs-tools.json` and `agent-prompt.txt` directly from the SDK definitions. The exporter does not contact ElevenLabs. Upload the standalone client tools, attach their IDs to the experimental agent, and use the supplied generic prompt; the existing Enmovil prompt names legacy tools and cannot simply be reused unchanged.
 
 For the local Enmovil trial, set `NEXT_PUBLIC_WEBMCP_AGENT_ID` before starting Next.js. Keep browser registration separate from microphone connection. The current Enmovil component is desktop-only, so native integration testing uses a 1440×1000 viewport. Extracting registration from that component is recommended before mobile rollout.
 
@@ -112,7 +113,7 @@ WEBMCP_TEST_URL=http://localhost:4180/transformation WEBMCP_PUBLIC_DEMO=1 bun ru
 
 Set `WEBMCP_CHROME_PATH` when Chrome is installed elsewhere. Without `WEBMCP_TEST_URL`, the runner tests its independent local fixture. `WEBMCP_PUBLIC_DEMO=1` additionally tests Google's public demo and requires network access. The script produces raw JSON and screenshots in `artifacts/webmcp/`.
 
-In the website checkout, install the bundled experimental tarball and run `npm run dev -- --port 4180`. The repository's package manifest and lockfile refer to `vendor/convinced-widget-sdk-0.1.1-webmcp.2.tgz`, so the unpublished build is reproducible without local absolute-path dependencies.
+The historical website trial used `vendor/convinced-widget-sdk-0.1.1-webmcp.2.tgz` and `npm run dev -- --port 4180`. That client checkout has not been migrated to `.3`. For the session fix, install the reviewed `.3` tarball, migrate the voice owner as above, and test against the matching backend; changing the dependency alone does not migrate a standalone controller.
 
 ## What remains before production
 

@@ -1,3 +1,4 @@
+import { ConvincedVoiceController, type ConvincedVoiceControllerOptions, type ElevenLabsVoiceDescriptor } from './voice.js'
 import { parseAssistantContent } from './content.js'
 import { TypedEventEmitter } from './events.js'
 import { ClientToolRegistry } from './tools/registry.js'
@@ -102,6 +103,13 @@ export class ConvincedSdkError extends Error {
   }
 }
 
+/** Session ownership, transcript capture and provider linking are supplied by the client. */
+export type SessionVoiceOptions = Omit<ConvincedVoiceControllerOptions, 'orgSlug' | 'sessionId' | 'tools'> & {
+  tools?: ClientToolRegistry
+  exactClientTools?: Record<string, string>
+  genericClientTool?: false | { name?: string }
+}
+
 export class ConvincedClient {
   readonly orgSlug: string
   readonly apiBase: string
@@ -116,6 +124,9 @@ export class ConvincedClient {
   private readonly sessionToolConsent = new Set<ClientTool>()
   private readonly behaviorEvents: WidgetBehaviorEvent[] = []
   private readonly elevenLabsConversationIds = new Set<string>()
+  private readonly sessionVoices = new Set<ConvincedVoiceController>()
+  private readonly voiceEventIds = new Set<string>()
+  private readonly voiceMessageSources = new Map<string, string>()
   private readonly demoRequestInFlight = new Map<string, Promise<WidgetDemoRequestResponse>>()
   private readonly completedDemoRequests = new Map<string, WidgetDemoRequestResponse>()
   private readonly sessionFingerprint: string
@@ -125,6 +136,8 @@ export class ConvincedClient {
   private initializePromise: Promise<ConvincedClientState> | null = null
   private endSessionPromise: Promise<Record<string, unknown>> | null = null
   private endSessionId: string | null = null
+  private endingSession = false
+  private creatingSession = false
   private stateValue: ConvincedClientState = {
     status: 'idle',
     config: null,
@@ -226,7 +239,17 @@ export class ConvincedClient {
   }
 
   async createSession(input: WidgetSessionInput = {}): Promise<WidgetSessionResponse> {
+    if (this.creatingSession) throw new ConvincedSdkError('session_in_progress', 'Wait for the pending session request.')
+    this.creatingSession = true
+    try { return await this.createSessionInternal(input) }
+    finally { this.creatingSession = false }
+  }
+
+  private async createSessionInternal(input: WidgetSessionInput): Promise<WidgetSessionResponse> {
     this.assertUsable()
+    if ([...this.sessionVoices].some(voice => ['connecting', 'connected', 'disconnecting'].includes(voice.state.status)) || this.endingSession) {
+      throw new ConvincedSdkError('voice_active', 'End voice before changing the Convinced session.')
+    }
     const previousSessionId = this.stateValue.session?.sessionId
     const sessionInput = sanitizeSessionInput(input)
     const sessionBody = JSON.stringify({
@@ -245,11 +268,14 @@ export class ConvincedClient {
         body: sessionBody,
       }),
     )
+    this.assertUsable()
     this.lastSessionInput = cloneSessionInput(sessionInput)
     if (session.sessionId !== previousSessionId) {
       this.sessionToolConsent.clear()
       this.behaviorEvents.length = 0
       this.elevenLabsConversationIds.clear()
+      this.voiceEventIds.clear()
+      this.voiceMessageSources.clear()
       this.demoRequestInFlight.clear()
       this.completedDemoRequests.clear()
       this.visitorIdentity = null
@@ -599,6 +625,72 @@ export class ConvincedClient {
     })
   }
 
+  /** Create headless voice owned by this Convinced session, independently of any renderer. */
+  createVoiceController(options: SessionVoiceOptions = {}): ConvincedVoiceController {
+    this.assertUsable()
+    let boundSessionId: string | null = null
+    let attempt = 0
+    const controllerKey = randomId('voice')
+    const controller = new ConvincedVoiceController({
+      ...options,
+      orgSlug: this.orgSlug,
+      tools: options.tools ?? this.tools,
+      sessionId: () => boundSessionId,
+      descriptorFactory: async (context) => {
+        this.assertUsable()
+        if (this.creatingSession) throw new ConvincedSdkError('session_in_progress', 'Wait for the pending session request before starting voice.')
+        const sessionId = this.requireSessionId()
+        if (this.endSessionId === sessionId) {
+          throw new ConvincedSdkError('session_ended', 'This session has ended or is closing; renewSession() before starting voice.')
+        }
+        boundSessionId = sessionId
+        attempt += 1
+        const descriptor = options.descriptorFactory
+          ? await options.descriptorFactory({ ...context, sessionId })
+          : options.descriptor ?? this.sessionVoiceDescriptor()
+        return {
+          ...descriptor,
+          ...(options.exactClientTools ? { exactClientTools: options.exactClientTools } : {}),
+          ...(options.genericClientTool !== undefined ? { genericClientTool: options.genericClientTool } : {}),
+          dynamicVariables: { ...descriptor.dynamicVariables, SESSION_ID: sessionId },
+        }
+      },
+      onConversationId: (id) => {
+        if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
+        this.linkElevenLabsConversation(id)
+        for (const [messageId, source] of this.voiceMessageSources) {
+          if (source === `${controllerKey}_${attempt}`) this.voiceMessageSources.set(messageId, id)
+        }
+        options.onConversationId?.(id)
+      },
+      onMessage: (message) => {
+        if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
+        const text = message.message?.trim()
+        if (!text) return
+        const role = message.source === 'user' ? 'user' : 'assistant'
+        // Provider event IDs are scoped to a connection. Identical words on a later turn are not duplicates.
+        const key = message.event_id === undefined ? null : `${boundSessionId}:${controllerKey}:${attempt}:${controller.conversationId}:${role}:${message.event_id}`
+        if (key && this.voiceEventIds.has(key)) return
+        if (key) this.voiceEventIds.add(key)
+        const captured = createMessage(role, text)
+        captured.createdAt = Math.max(captured.createdAt, (this.stateValue.messages.at(-1)?.createdAt ?? 0) + 1)
+        this.voiceMessageSources.set(captured.id, controller.conversationId ?? `${controllerKey}_${attempt}`)
+        this.appendMessage(captured)
+        options.onMessage?.(message)
+      },
+    })
+    this.sessionVoices.add(controller)
+    return controller
+  }
+
+  private sessionVoiceDescriptor(): ElevenLabsVoiceDescriptor {
+    const agentId = this.stateValue.config?.elevenLabsAgentId
+    if (typeof agentId !== 'string' || !agentId.trim()) {
+      throw new ConvincedSdkError('voice_not_configured', 'Convinced voice is not configured for this session.')
+    }
+    return { agentId, connectionType: 'webrtc', genericClientTool: false }
+  }
+
   /** Remember an ElevenLabs conversation id for session-end transcript linking. */
   linkElevenLabsConversation(conversationId: string): void {
     const id = conversationId.trim()
@@ -611,9 +703,12 @@ export class ConvincedClient {
   async endSession(options: EndWidgetSessionOptions = {}): Promise<Record<string, unknown>> {
     this.assertUsable()
     const sessionId = this.requireSessionId()
+    if (this.creatingSession) throw new ConvincedSdkError('session_in_progress', 'Wait for the pending session request before closing.')
+    if (this.activeTurnController) throw new ConvincedSdkError('turn_in_progress', 'Wait for the current chat turn before ending the session.')
     if (this.endSessionPromise && this.endSessionId === sessionId) return this.endSessionPromise
-    const operation = this.endSessionInternal(sessionId, options)
+    this.endingSession = true
     this.endSessionId = sessionId
+    const operation = this.endSessionInternal(sessionId, options)
     this.endSessionPromise = operation
     try {
       return await operation
@@ -623,6 +718,8 @@ export class ConvincedClient {
         this.endSessionId = null
       }
       throw error
+    } finally {
+      this.endingSession = false
     }
   }
 
@@ -630,6 +727,11 @@ export class ConvincedClient {
     sessionId: string,
     options: EndWidgetSessionOptions,
   ): Promise<Record<string, unknown>> {
+    // Stop transport first so final messages are included in the same durable transcript.
+    const stopped = await Promise.allSettled([...this.sessionVoices].map(voice => voice.end()))
+    for (const result of stopped) {
+      if (result.status === 'rejected') this.events.emit('error', result.reason instanceof Error ? result.reason : new Error(String(result.reason)))
+    }
     const suppliedIds = options.elevenLabsConversationIds ?? []
     for (const id of suppliedIds) this.linkElevenLabsConversation(id)
     if (options.elevenLabsConversationId) {
@@ -641,6 +743,9 @@ export class ConvincedClient {
     const clientMessages = options.clientMessages ?? this.stateValue.messages.map((message) => ({
       role: message.role,
       content: message.text,
+      id: message.id,
+      createdAt: message.createdAt,
+      ...(this.voiceMessageSources.has(message.id) ? {sourceId: this.voiceMessageSources.get(message.id)} : {}),
     }))
     const slidesViewed = Array.from(new Set(
       (Array.isArray(options.slidesViewed) ? options.slidesViewed : [])
@@ -666,6 +771,7 @@ export class ConvincedClient {
 
   async sendMessage(message: string, options: SendMessageOptions = {}): Promise<ChatMessage> {
     this.assertUsable()
+    if (this.endSessionId === this.stateValue.session?.sessionId) throw new ConvincedSdkError('session_ended', 'This session has ended or is closing; renewSession() before sending a message.')
     const trimmed = message.trim()
     if (!trimmed) throw new Error('message must not be empty.')
     assertByteLimit(
@@ -931,6 +1037,10 @@ export class ConvincedClient {
   destroy(): void {
     if (this.stateValue.status === 'destroyed') return
     this.cancelActiveTurn('Client destroyed.')
+    for (const voice of this.sessionVoices) void voice.end().catch(() => undefined)
+    this.sessionVoices.clear()
+    this.voiceEventIds.clear()
+    this.voiceMessageSources.clear()
     this.sessionToolConsent.clear()
     this.behaviorEvents.length = 0
     this.elevenLabsConversationIds.clear()

@@ -1,6 +1,6 @@
 {
   "name": "@convinced/widget-sdk",
-  "version": "0.1.1-webmcp.2",
+  "version": "0.1.1-webmcp.3",
   "description": "Voice-first, headless, and default browser UI SDK for Convinced widgets.",
   "homepage": "https://github.com/Get-Convinced/convinced-widget-sdk#readme",
   "bugs": {
@@ -36,6 +36,7 @@
     "README.md",
     "docs/webmcp-handoff.md",
     "docs/agent-prompt-management.md",
+    "docs/voice-session-ownership.md",
     "LICENSE"
   ],
   "sideEffects": false,

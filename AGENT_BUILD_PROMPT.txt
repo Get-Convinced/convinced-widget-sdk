@@ -16,13 +16,13 @@ Do not claim the work is complete until the real-browser acceptance checks near 
 
 ## Experimental handoff: WebMCP and saved agent settings
 
-When the supplied release is `0.1.1-webmcp.2`, install its reviewed tarball rather than npm latest:
+This source targets the unpublished `0.1.1-webmcp.3` candidate and its matching transcript-reconciliation backend. Install the reviewed candidate tarball supplied with the handoff:
 
 ```bash
-npm install ./vendor/convinced-widget-sdk-0.1.1-webmcp.2.tgz
+npm install --save-exact ./vendor/convinced-widget-sdk-0.1.1-webmcp.3.tgz
 ```
 
-Read the handoff's WebMCP and agent-prompt-management guides and the matching backend source. The public main-branch prompt can lag this unpublished release. Preserve the existing package manager and lockfile.
+Read docs/voice-session-ownership.md, the WebMCP guide and agent-prompt-management guide. Confirm Convinced has deployed the matching backend before testing durable mixed text/voice history. Do not treat this candidate as a published production release. Preserve the existing package manager and lockfile.
 
 For a generic WebMCP website integration, feature-detect with `getWebMcpModelContext`, publish existing handlers with `publishRegistryToWebMcp` or use the site's native registrations, then create `createWebMcpBridge` with a real host authorizer. Give the voice controller `WEBMCP_VOICE_BINDINGS`, a registry containing the bridge's two tools, and `genericClientTool: false`. Configure those two callbacks on the selected ElevenLabs agent; do not blindly run the canonical 11-tool sync on it. Keep one persistent owner, dispose route tools, return verified action results, and test another independently authored website. Current SDK support is same-origin and experimental; no universal browser or autonomous-task claim is warranted.
 
@@ -48,19 +48,7 @@ Never replace an unknown value with a plausible-looking production value. Keep i
 
 ## Required package and integration shape
 
-Install the SDK from npm:
-
-```bash
-npm install @convinced/widget-sdk
-```
-
-Use the repository's existing package manager when it is not npm:
-
-```bash
-bun add @convinced/widget-sdk
-pnpm add @convinced/widget-sdk
-yarn add @convinced/widget-sdk
-```
+Use the exact reviewed tarball above with the application's package manager. Do not install unversioned npm latest: it remains `0.1.0` and does not contain this candidate's WebMCP or session-owned voice methods.
 
 Do not use the iframe loader for this implementation. Do not copy SDK source files into the host application. Import from `@convinced/widget-sdk`.
 
@@ -79,7 +67,7 @@ import {
 } from '@convinced/widget-sdk'
 ```
 
-Create one `ClientToolRegistry`, one `ConvincedClient`, and one `ConvincedVoiceController` for the active widget session. Register the allowed tools before starting voice. Do not create separate chat and voice identities or independent session stores.
+Create one `ClientToolRegistry` and one `ConvincedClient`. For headless voice, create its controller through `client.createVoiceController()` so that client owns transcript capture and session association. Register the allowed tools before starting voice. Do not create separate chat and voice identities or independent session stores.
 
 ## Initialize the Convinced campaign session
 
@@ -103,29 +91,25 @@ Use the initialized session's configuration and personalization instead of hardc
 
 ## Make ElevenLabs voice the primary path
 
-Use a private ElevenLabs agent in production. Obtain a fresh short-lived WebRTC credential immediately before every start or reconnect. Prefer Convinced's signed session endpoint:
+Convinced must provision the intended voice agent and its matching tools. The initialized client can use that session's public agent configuration. For a private agent, Convinced must supply an authenticated server credential service; the hosted `client.getVoiceCredential()` endpoint is not deployed. Do not build a client integration that depends on that missing endpoint, or put a provider API key in browser code.
+
+Headless setup:
 
 ```ts
-const voice = new ConvincedVoiceController({
-  descriptorFactory: async () => ({
-    ...(await client.getVoiceCredential()),
-    exactClientTools: {
-      host_get_page_context: 'host_get_page_context',
-      host_navigate: 'host_navigate',
-      host_scroll_to: 'host_scroll_to',
-      host_highlight: 'host_highlight',
-    },
-    genericClientTool: { name: 'host_extension_call' },
-  }),
+const voice = client.createVoiceController({
   tools,
-  orgSlug: client.orgSlug,
-  sessionId: () => client.state.session?.sessionId ?? null,
-  authorizeToolCall: authorizeVoiceTool,
-  onConversationId: (conversationId) => {
-    client.linkElevenLabsConversation(conversationId)
+  exactClientTools: {
+    host_get_page_context: 'host_get_page_context',
+    host_navigate: 'host_navigate',
+    host_scroll_to: 'host_scroll_to',
+    host_highlight: 'host_highlight',
   },
+  genericClientTool: false,
+  authorizeToolCall: authorizeVoiceTool,
 })
 ```
+
+For private agents, pass a server-supplied `descriptorFactory` that fetches a fresh short-lived descriptor on each start/reconnect. The SDK supplies the Convinced session ID to that factory and to the voice transport. Remove manual `onConversationId` linking and custom transcript buffering. Render text and voice through `client.on('message', ...)`; the application does not need provider conversation IDs.
 
 Only enable `host_extension_call` when the ElevenLabs agent defines that exact client tool. Exact tool names and input schemas in ElevenLabs must match the registered SDK mappings. Enable ElevenLabs "Wait for response" for any action whose result should affect the next spoken turn.
 
@@ -333,11 +317,13 @@ For `managed-v2`, call and await `widget.endSession()` from an explicit close or
 
 For a headless UI:
 
-- Collect voice `message` events in chronological order.
-- Keep chat and voice turns in one ordered session history.
-- Record only exact slide filenames actually shown.
-- Link every ElevenLabs conversation ID with `client.linkElevenLabsConversation()`.
-- End voice, then call and await `client.endSession({ clientMessages, slidesViewed })`.
+- Create voice through `client.createVoiceController()` and render `client.on('message', ...)` events.
+- Record only exact slide filenames actually shown; this is presentation state owned by the UI.
+- Wait for an active text request, then await `client.endSession({ slidesViewed })`. The SDK stops voice, captures final turns, links provider IDs internally and submits mixed history.
+- Keep the client and retry `endSession()` if the HTTP save rejects. A successful save does not guarantee a generated summary.
+- Before a new conversation after successful finalization, await `client.renewSession()`.
+
+The matching backend reconciles stored text and captured voice, and refreshes derived summaries when late provider turns arrive. Summaries may remain pending after model failure or above the synchronous budget. There is no background retry worker in this change. Verify the stored Convinced session, not just the transport response.
 
 Do not depend on `beforeunload` or `pagehide` for the only session write; browsers may cancel asynchronous work. Make teardown idempotent and observable. Remove event listeners, stop PostHog replay, end microphone capture, and destroy the widget/client when its owner unmounts.
 

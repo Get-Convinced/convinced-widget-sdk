@@ -281,6 +281,7 @@ export class ConvincedVoiceController {
   }
 
   async start(context: ConvincedVoiceStartContext = {}): Promise<ConvincedVoiceState> {
+    if (this.endPromise) await this.endPromise
     if (this.startPromise) return this.startPromise
     if (this.conversation && this.stateValue.status !== 'disconnected') {
       throw new Error('An ElevenLabs voice session is already active.')
@@ -454,9 +455,10 @@ export class ConvincedVoiceController {
   }
 
   private async endInternal(): Promise<void> {
-    ++this.lifecycleGeneration
     const pendingStart = this.startPromise
     const conversation = this.conversation
+    // Cancel an unresolved start immediately; connected transports may flush final messages during close.
+    if (!conversation) ++this.lifecycleGeneration
     this.executionController.abort(new Error('Voice session ended.'))
     this.sessionConsent.clear()
 
@@ -475,6 +477,7 @@ export class ConvincedVoiceController {
       } catch (error) {
         closeError = error
       } finally {
+        ++this.lifecycleGeneration
         if (this.conversation === conversation) this.conversation = null
       }
     }
@@ -528,6 +531,7 @@ export class ConvincedVoiceController {
     const dynamicVariables = {
       ...(descriptor.dynamicVariables ?? {}),
       ...(context.dynamicVariables ?? {}),
+      ...(this.resolveSessionId() ? { SESSION_ID: this.resolveSessionId()! } : {}),
     }
     const overrides = mergeJsonObjects(descriptor.overrides, context.overrides)
     assertInitContextBudget(dynamicVariables, overrides)
@@ -589,7 +593,9 @@ export class ConvincedVoiceController {
         safeCall(() => this.options.onError?.(error, context))
       },
       onMessage: (message) => {
-        if (!this.isCurrentTransport(generation, attempt)) return
+        const closingCurrentTransport = this.stateValue.status === 'disconnecting' &&
+          generation === this.lifecycleGeneration && attempt === this.transportAttemptGeneration
+        if (!this.isCurrentTransport(generation, attempt) && !closingCurrentTransport) return
         this.events.emit('message', message)
         safeCall(() => this.options.onMessage?.(message))
       },

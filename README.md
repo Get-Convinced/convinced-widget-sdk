@@ -14,7 +14,7 @@ Read the [Build with a coding agent guide](https://docs.getconvinced.ai/guides/w
 
 ## Install
 
-Experimental WebMCP support and customer prompt management are available in `0.1.1-webmcp.2`. See the [WebMCP integration and test handoff](docs/webmcp-handoff.md) for the website registration adapter, generic agent bridge, browser requirements and measured limitations.
+This checkout is the unpublished `0.1.1-webmcp.3` candidate, adding session-owned headless voice. Use the reviewed candidate tarball with its matching backend; see [migration and release requirements](docs/voice-session-ownership.md). Published WebMCP support and customer prompt management remain available in `0.1.1-webmcp.2`. See the [WebMCP integration and test handoff](docs/webmcp-handoff.md) for the website registration adapter, generic agent bridge, browser requirements and measured limitations.
 
 ```bash
 npm install @convinced/widget-sdk
@@ -457,3 +457,7 @@ npm pack --dry-run
 ## License
 
 MIT
+
+## Headless session ownership
+
+Use `client.createVoiceController()` to attach headless voice to the Convinced session. The SDK captures turns and handles provider IDs; close with `await client.endSession()`. See [session ownership and migration](docs/voice-session-ownership.md) for the release candidate, backend requirement, WebMCP wiring and retry behavior.

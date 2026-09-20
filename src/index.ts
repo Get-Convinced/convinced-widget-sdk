@@ -21,6 +21,7 @@ export {
   normalizeCampaignToken,
   resolveWidgetSessionAttribution,
   type ConvincedClientOptions,
+  type SessionVoiceOptions,
   type ToolAuthorizationContext,
   type ToolCallAuthorizer,
 } from './client.js'

@@ -78,6 +78,9 @@ import {
 const config: WidgetConfig = { orgName: 'Example', orgSlug: 'example' }
 const client = new ConvincedClient({ orgSlug: config.orgSlug })
 void client.state
+const voice = client.createVoiceController()
+void voice.start
+void client.endSession
 const admin = new ConvincedAgentAdmin({ orgSlug: config.orgSlug, agentId: 'agent_example', apiBase: 'https://app.example' })
 void admin.getPrompt
 void admin.updatePrompt

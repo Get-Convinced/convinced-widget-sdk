@@ -45,12 +45,21 @@ async function connect(page, url, expectedCount) {
     window.bridge = S.createWebMcpBridge({ modelContext: document.modelContext, origin: location.origin,
       authorize: tool => tool.origin === location.origin && !tool.annotations?.consequentialHint })
     let callbacks
-    window.voice = new S.ConvincedVoiceController({
-      orgSlug: 'webmcp-test', sessionId: null,
+    window.sessionRequests = []
+    window.client = new S.ConvincedClient({orgSlug:'webmcp-test', apiBase:location.origin, fetch:async (url, init) => {
+      const body = JSON.parse(init?.body ?? '{}')
+      window.sessionRequests.push({url, body})
+      if (url.endsWith('/session')) return Response.json({sessionId:'session_native_webmcp',config:{orgSlug:'webmcp-test',orgName:'WebMCP test',elevenLabsAgentId:'agent_local_webmcp_test'}})
+      if (url.endsWith('/session/end')) return Response.json({ok:true})
+      throw new Error('Unexpected SDK endpoint: '+url)
+    }})
+    await window.client.createSession()
+    window.voice = window.client.createVoiceController({
       tools: new S.ClientToolRegistry(window.bridge.tools),
-      descriptor: { agentId: 'agent_local_webmcp_test', exactClientTools: S.WEBMCP_VOICE_BINDINGS, genericClientTool: false },
+      exactClientTools: S.WEBMCP_VOICE_BINDINGS, genericClientTool: false,
       conversationFactory: async options => {
         callbacks = options.clientTools
+        window.providerOptions = options
         options.onConnect?.({ conversationId: 'conv_native_webmcp_test' })
         return { endSession: async () => {}, getId: () => 'conv_native_webmcp_test', setMicMuted: () => {}, sendContextualUpdate: () => {}, sendUserMessage: () => {} }
       },
@@ -107,6 +116,19 @@ try {
     try { await window.bridge.executeTool(tools[0].id, {}); return false } catch { return true } finally { controller.abort() }
   })
   report.cases.push({ label: 'Native toolchange invalidates handles', passed: stale })
+  const session = await shop.evaluate(async () => {
+    window.providerOptions.onMessage({source:'user',role:'user',message:'Add two notebooks',event_id:1})
+    window.providerOptions.onMessage({source:'ai',role:'agent',message:'Two notebooks added',event_id:2})
+    await window.client.endSession()
+    return {sessionId:window.providerOptions.dynamicVariables.SESSION_ID, body:window.sessionRequests.at(-1).body, state:window.voice.state.status}
+  })
+  assert.equal(session.sessionId, 'session_native_webmcp')
+  assert.equal(session.body.sessionId, 'session_native_webmcp')
+  assert.deepEqual(session.body.clientMessages.map(m=>m.content), ['Add two notebooks','Two notebooks added'])
+  assert.deepEqual(session.body.elevenLabsConversationIds, ['conv_native_webmcp_test'])
+  assert.equal(session.state, 'disconnected')
+  report.cases.push({label:'Headless WebMCP session automatically captures voice and finalizes with the Convinced ID',passed:true})
+
 
   if (process.env.WEBMCP_PUBLIC_DEMO === '1') {
     const pizza = await browser.newPage()
