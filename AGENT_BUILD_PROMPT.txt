@@ -16,13 +16,13 @@ Do not claim the work is complete until the real-browser acceptance checks near 
 
 ## Experimental handoff: WebMCP and saved agent settings
 
-This source targets the unpublished `0.1.1-webmcp.3` candidate and its matching transcript-reconciliation backend. Install the reviewed candidate tarball supplied with the handoff:
+This source targets SDK `0.1.1-webmcp.3` and the deployed Convinced transcript-reconciliation backend. Pin the package:
 
 ```bash
-npm install --save-exact ./vendor/convinced-widget-sdk-0.1.1-webmcp.3.tgz
+npm install --save-exact @convinced/widget-sdk@0.1.1-webmcp.3
 ```
 
-Read docs/voice-session-ownership.md, the WebMCP guide and agent-prompt-management guide. Confirm Convinced has deployed the matching backend before testing durable mixed text/voice history. Do not treat this candidate as a published production release. Preserve the existing package manager and lockfile.
+Read docs/voice-session-ownership.md, the WebMCP guide and agent-prompt-management guide. Self-hosted backends must support transcript reconciliation before relying on durable mixed text/voice history. Preserve the existing package manager and lockfile.
 
 For a generic WebMCP website integration, feature-detect with `getWebMcpModelContext`, publish existing handlers with `publishRegistryToWebMcp` or use the site's native registrations, then create `createWebMcpBridge` with a real host authorizer. Give the voice controller `WEBMCP_VOICE_BINDINGS`, a registry containing the bridge's two tools, and `genericClientTool: false`. Configure those two callbacks on the selected ElevenLabs agent; do not blindly run the canonical 11-tool sync on it. Keep one persistent owner, dispose route tools, return verified action results, and test another independently authored website. Current SDK support is same-origin and experimental; no universal browser or autonomous-task claim is warranted.
 
@@ -48,7 +48,7 @@ Never replace an unknown value with a plausible-looking production value. Keep i
 
 ## Required package and integration shape
 
-Use the exact reviewed tarball above with the application's package manager. Do not install unversioned npm latest: it remains `0.1.0` and does not contain this candidate's WebMCP or session-owned voice methods.
+Use the exact pinned version above with the application's package manager. Do not install unversioned npm latest: it remains `0.1.0` and does not contain this release's WebMCP or session-owned voice methods.
 
 Do not use the iframe loader for this implementation. Do not copy SDK source files into the host application. Import from `@convinced/widget-sdk`.
 

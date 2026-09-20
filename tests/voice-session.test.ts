@@ -53,6 +53,22 @@ describe('session-owned headless voice', () => {
     expect(f.voice.state.status).toBe('disconnected')
     expect(f.client.state.messages.at(-1)?.role).toBe('assistant')
   })
+  test('captures typed voice messages even when the provider does not echo them', async () => {
+    const f = fixture()
+    await f.client.createSession()
+    await f.voice.start()
+    f.voice.sendUserMessage('Show me the leadership section on this page.')
+    f.emit('agent', 'Opening Leadership.', 1)
+    f.voice.sendUserMessage('Yes')
+    f.voice.sendUserMessage('Yes')
+    await f.client.endSession()
+    const body = f.calls.find(c => c.path.endsWith('/session/end'))!.body
+    expect((body.clientMessages as unknown as Array<{content:string}>).map(m => m.content)).toEqual([
+      'Show me the leadership section on this page.', 'Opening Leadership.', 'Yes', 'Yes', 'Final voice answer',
+    ])
+    expect(() => f.voice.sendUserMessage('After close')).toThrow()
+    expect(f.client.state.messages.some(m => m.text === 'After close')).toBe(false)
+  })
   test('reconnects retain repeated legitimate turns, isolate event IDs, and retry the same transcript after a failed save', async () => {
     const f=fixture(); await f.client.createSession(); await f.voice.start()
     f.emit('user','Yes',1); f.emit('user','Yes',2)

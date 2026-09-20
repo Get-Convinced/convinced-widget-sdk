@@ -1,6 +1,6 @@
 # WebMCP SDK experiment — Enovate handoff
 
-Historical page-action trials below were tested on 14 September 2026 with `0.1.1-webmcp.2`. The updated session integration example targets the unpublished `0.1.1-webmcp.3` candidate and matching backend. See [voice session ownership](voice-session-ownership.md) for migration, persistence limits and rollout requirements. On 21 September the `.3` native Chrome fixture passed all five checks, including automatic voice capture/finalization, with simulated provider transport.
+Historical page-action trials below were tested on 14 September 2026 with `0.1.1-webmcp.2`. The updated session integration example targets `0.1.1-webmcp.3` and the deployed transcript-reconciliation backend. See [voice session ownership](voice-session-ownership.md) for migration, persistence limits and rollout requirements. On 21 September the `.3` native Chrome fixture passed all five checks, including automatic voice capture/finalization, with simulated provider transport.
 
 ## Decision
 
@@ -113,7 +113,7 @@ WEBMCP_TEST_URL=http://localhost:4180/transformation WEBMCP_PUBLIC_DEMO=1 bun ru
 
 Set `WEBMCP_CHROME_PATH` when Chrome is installed elsewhere. Without `WEBMCP_TEST_URL`, the runner tests its independent local fixture. `WEBMCP_PUBLIC_DEMO=1` additionally tests Google's public demo and requires network access. The script produces raw JSON and screenshots in `artifacts/webmcp/`.
 
-The historical website trial used `vendor/convinced-widget-sdk-0.1.1-webmcp.2.tgz` and `npm run dev -- --port 4180`. That client checkout has not been migrated to `.3`. For the session fix, install the reviewed `.3` tarball, migrate the voice owner as above, and test against the matching backend; changing the dependency alone does not migrate a standalone controller.
+The historical website trial used `vendor/convinced-widget-sdk-0.1.1-webmcp.2.tgz` and `npm run dev -- --port 4180`. The client PR now migrates to `.3`. For the session fix, install the exact `.3` npm version, migrate the voice owner as above, and test against the hosted backend; changing the dependency alone does not migrate a standalone controller.
 
 ## What remains before production
 

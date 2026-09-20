@@ -1,6 +1,6 @@
 # Headless voice belongs to the Convinced session
 
-Release candidate: `0.1.1-webmcp.3`. This guide describes the new SDK source. Use it with the matching transcript-reconciliation backend change. It is not a claim that the candidate is published or deployed.
+SDK version: `0.1.1-webmcp.3`. Use it with the Convinced hosted transcript-reconciliation backend, deployed on 21 September 2026. Self-hosted installations need the companion backend change.
 
 Create voice through the client which owns the Convinced session:
 
@@ -17,7 +17,7 @@ await voice.start()
 await client.endSession()
 ```
 
-`renderMessage` is your UI callback. The client receives normalized `user` and `assistant` messages from both text and voice. It records provider conversation IDs internally, carries the Convinced session ID into the voice transport, and retains turns across reconnects. `endSession()` stops its voice controllers, includes any final captured turns, and submits the transcript without provider-specific arguments from the application.
+`renderMessage` is your UI callback. The client receives normalized `user` and `assistant` messages from both text and voice. `voice.sendUserMessage()` also records typed turns, since the provider does not echo those through its transcript callback. It records provider conversation IDs internally, carries the Convinced session ID into the voice transport, and retains turns across reconnects. `endSession()` stops its voice controllers, includes any final captured turns, and submits the transcript without provider-specific arguments from the application.
 
 `voice.end()` stops voice while leaving the Convinced session available for text or reconnection. After a successful `client.endSession()`, call `client.renewSession()` before starting a new conversation. Wait for any active text request before ending the session. A failed HTTP save rejects; retry `client.endSession()` before discarding the client. `destroy()` releases resources; it is not a replacement for awaiting session persistence. Browser termination can still interrupt an HTTP save.
 
@@ -50,4 +50,4 @@ Backend companion change: session finalization merges snapshots with stored text
 
 Summary generation is separate from transcript persistence. Model failures or input above the 120,000-character summary budget leave the transcript stored and its summary pending. The budget counts the formatted transcript; it does not truncate stored turns. No background summary retry worker is included. Convinced can retry finalization or provider sync after a transient failure; a conversation above the budget needs a separate summarization strategy. A successful `endSession()` is cached by the SDK and does not promise a summary field or trigger further server work on repeat calls.
 
-Before rollout, Convinced must deploy the companion backend and verify the webhook signing secret and delivery. Confirm that the session's configured agent supports the page's exact tool bindings. Production rejects unsigned provider webhooks. Configure provider retries separately: this patch does not change provider delivery settings. Publish the tested SDK version only after those checks. The candidate does not add the missing hosted private-voice credential endpoint, fix other session authorization gaps, or change the live agent's tools.
+Convinced must configure the chosen agent for the page's exact bindings. The SDK cannot change those settings. Production rejects unsigned provider webhooks; operators must provision signing and delivery separately. Immediate browser capture does not rely on a webhook arriving before finalization. This release does not add the hosted private-voice credential endpoint or change provider retry settings.

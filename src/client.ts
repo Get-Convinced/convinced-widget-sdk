@@ -631,6 +631,13 @@ export class ConvincedClient {
     let boundSessionId: string | null = null
     let attempt = 0
     const controllerKey = randomId('voice')
+    const capture = (role: 'user' | 'assistant', text: string) => {
+      if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
+      const captured = createMessage(role, text)
+      captured.createdAt = Math.max(captured.createdAt, (this.stateValue.messages.at(-1)?.createdAt ?? 0) + 1)
+      this.voiceMessageSources.set(captured.id, controller.conversationId ?? `${controllerKey}_${attempt}`)
+      this.appendMessage(captured)
+    }
     const controller = new ConvincedVoiceController({
       ...options,
       orgSlug: this.orgSlug,
@@ -672,13 +679,11 @@ export class ConvincedClient {
         const key = message.event_id === undefined ? null : `${boundSessionId}:${controllerKey}:${attempt}:${controller.conversationId}:${role}:${message.event_id}`
         if (key && this.voiceEventIds.has(key)) return
         if (key) this.voiceEventIds.add(key)
-        const captured = createMessage(role, text)
-        captured.createdAt = Math.max(captured.createdAt, (this.stateValue.messages.at(-1)?.createdAt ?? 0) + 1)
-        this.voiceMessageSources.set(captured.id, controller.conversationId ?? `${controllerKey}_${attempt}`)
-        this.appendMessage(captured)
+        capture(role, text)
         options.onMessage?.(message)
       },
     })
+    controller.on('user_message_sent', text => capture('user', text))
     this.sessionVoices.add(controller)
     return controller
   }

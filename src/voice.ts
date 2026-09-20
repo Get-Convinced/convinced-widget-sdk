@@ -157,6 +157,8 @@ export interface VoiceClientToolResultEvent extends VoiceClientToolEvent {
 export interface ConvincedVoiceControllerEventMap {
   state: ConvincedVoiceState
   message: ElevenLabsVoiceMessage
+  /** Successful typed sends are not echoed by the provider transcript callback. */
+  user_message_sent: string
   client_tool_call: VoiceClientToolEvent
   client_tool_result: VoiceClientToolResultEvent
   error: Error
@@ -359,7 +361,9 @@ export class ConvincedVoiceController {
   }
 
   sendUserMessage(text: string): void {
-    this.requireConversation().sendUserMessage(boundedText(text, 'user message', 4_000))
+    const message = boundedText(text, 'user message', 4_000)
+    this.requireConversation().sendUserMessage(message)
+    this.events.emit('user_message_sent', message)
   }
 
   sendUserActivity(): void {
