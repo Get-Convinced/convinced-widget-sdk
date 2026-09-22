@@ -3,7 +3,7 @@ import { normalizeApiBase, readJsonResponse } from './transport.js'
 /** Management access uses an authenticated admin session, never a widget token. */
 export interface ConvincedAgentAdminOptions {
   orgSlug: string
-  /** The same ElevenLabs agentId used by ConvincedVoiceController. */
+  /** The Convinced SDK agent deployment to update. */
   agentId: string
   /** Convinced app origin, or an authenticated same-origin management proxy. */
   apiBase: string
@@ -11,14 +11,12 @@ export interface ConvincedAgentAdminOptions {
 }
 
 export interface AgentPrompt {
-  source: 'elevenlabs'
+  source: 'convinced'
   agentId: string
   systemPrompt: string
   firstMessage: string
   revision: string
-  branchId: string | null
-  versionId: string | null
-  trafficPercentage: number | null
+  updatedAt?: string
 }
 
 export interface UpdateAgentPromptInput {
@@ -29,7 +27,7 @@ export interface UpdateAgentPromptInput {
   expectedRevision: string
 }
 
-/** Reads and persistently updates the customer's registered ElevenLabs agent. */
+/** Reads and persistently updates a Convinced SDK agent prompt. */
 export class ConvincedAgentAdmin {
   private readonly endpoint: string
   private readonly agentId: string
@@ -90,7 +88,7 @@ export class ConvincedAgentAdmin {
       redirect: 'error',
       headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
     }))
-    if (result.source !== 'elevenlabs' || result.agentId !== this.agentId ||
+    if (result.source !== 'convinced' || result.agentId !== this.agentId ||
         typeof result.systemPrompt !== 'string' || typeof result.firstMessage !== 'string' ||
         !/^[a-f0-9]{64}$/.test(result.revision)) {
       throw new Error('The management API returned an invalid agent prompt.')

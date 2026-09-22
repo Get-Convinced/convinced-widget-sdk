@@ -102,7 +102,7 @@ describe('client tool manifest limits', () => {
     })
   })
 
-  test('governs direct voice execution with schema validation and caller consent', async () => {
+  test('governs adapter execution with schema validation and caller consent', async () => {
     let handlerCalls = 0
     let authorizationCalls = 0
     const registry = new ClientToolRegistry([{
@@ -122,7 +122,7 @@ describe('client tool manifest limits', () => {
       handler: async (arguments_, context) => {
         handlerCalls += 1
         expect(context.surface).toBe('voice')
-        expect(context.conversationId).toBe('conv_123')
+        expect(context.liveSessionId).toBe('live_123')
         return { opened: String(arguments_.section ?? '') }
       },
     }])
@@ -131,7 +131,7 @@ describe('client tool manifest limits', () => {
       sessionId: 'session_123',
       turnId: 'voice_turn_123',
       surface: 'voice' as const,
-      conversationId: 'conv_123',
+      liveSessionId: 'live_123',
       signal: new AbortController().signal,
     }
 

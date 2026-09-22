@@ -1,7 +1,12 @@
-import { ConvincedVoiceController, type ConvincedVoiceControllerOptions, type ElevenLabsVoiceDescriptor } from './voice.js'
+import { ConvincedLiveController, type ConvincedLiveControllerOptions } from './live.js'
 import { parseAssistantContent } from './content.js'
 import { TypedEventEmitter } from './events.js'
 import { ClientToolRegistry } from './tools/registry.js'
+import {
+  getWebMcpModelContext,
+  publishRegistryToWebMcp,
+  type WebMcpModelContext,
+} from './tools/webmcp.js'
 import {
   SSE_DONE,
   ConvincedApiError,
@@ -45,7 +50,6 @@ import {
   type WidgetSessionAttribution,
   type WidgetSessionResponse,
   type WidgetVisitorIntelResponse,
-  type WidgetVoiceCredentialResponse,
   type WidgetSseEvent,
   type UpdateSessionContextInput,
   type VisitorIdentity,
@@ -68,8 +72,8 @@ export interface ToolAuthorizationContext {
   orgSlug: string
   sessionId: string
   round: number
-  surface: 'chat' | 'voice'
-  conversationId?: string
+  surface: 'chat' | 'voice' | 'webmcp'
+  liveSessionId?: string
   /** Aborts when the turn is cancelled or its signed capability is about to expire. */
   signal: AbortSignal
 }
@@ -80,6 +84,8 @@ export type ToolCallAuthorizer = (
 
 export interface ConvincedClientOptions {
   orgSlug: string
+  /** Public Convinced AgentDeployment ID. The backend verifies organization ownership. */
+  agentId?: string
   apiBase?: string
   widgetToken?: string
   fetch?: typeof fetch
@@ -89,6 +95,11 @@ export interface ConvincedClientOptions {
   /** May reduce, but never exceed, the protocol maximum of four continuation rounds. */
   maxClientToolRounds?: number
   defaultChatContext?: SendMessageOptions['context']
+}
+
+export interface PublishClientToolsToWebMcpOptions {
+  /** Override only for tests or an explicit browser implementation. */
+  modelContext?: WebMcpModelContext
 }
 
 export class ConvincedSdkError extends Error {
@@ -103,12 +114,11 @@ export class ConvincedSdkError extends Error {
   }
 }
 
-/** Session ownership, transcript capture and provider linking are supplied by the client. */
-export type SessionVoiceOptions = Omit<ConvincedVoiceControllerOptions, 'orgSlug' | 'sessionId' | 'tools'> & {
-  tools?: ClientToolRegistry
-  exactClientTools?: Record<string, string>
-  genericClientTool?: false | { name?: string }
-}
+/** Live session ownership, transcript capture, and endpoint authentication are supplied by the client. */
+export type SessionLiveOptions = Omit<
+  ConvincedLiveControllerOptions,
+  'descriptor' | 'fetch' | 'onClientDelegation'
+>
 
 export class ConvincedClient {
   readonly orgSlug: string
@@ -116,6 +126,7 @@ export class ConvincedClient {
   readonly tools: ClientToolRegistry
 
   private readonly widgetToken?: string
+  private readonly agentId?: string
   private readonly fetchImpl: typeof fetch
   private readonly events = new TypedEventEmitter<ConvincedClientEventMap>()
   private readonly authorizeToolCall?: ToolCallAuthorizer
@@ -123,16 +134,15 @@ export class ConvincedClient {
   private readonly defaultChatContext: SendMessageOptions['context']
   private readonly sessionToolConsent = new Set<ClientTool>()
   private readonly behaviorEvents: WidgetBehaviorEvent[] = []
-  private readonly elevenLabsConversationIds = new Set<string>()
-  private readonly sessionVoices = new Set<ConvincedVoiceController>()
-  private readonly voiceEventIds = new Set<string>()
-  private readonly voiceMessageSources = new Map<string, string>()
+  private readonly sessionLives = new Set<ConvincedLiveController>()
+  private readonly liveEventIds = new Set<string>()
   private readonly demoRequestInFlight = new Map<string, Promise<WidgetDemoRequestResponse>>()
   private readonly completedDemoRequests = new Map<string, WidgetDemoRequestResponse>()
   private readonly sessionFingerprint: string
   private lastSessionInput: WidgetSessionInput | null = null
   private visitorIdentity: VisitorIdentity | null = null
   private activeTurnController: AbortController | null = null
+  private messageQueue: Promise<void> = Promise.resolve()
   private initializePromise: Promise<ConvincedClientState> | null = null
   private endSessionPromise: Promise<Record<string, unknown>> | null = null
   private endSessionId: string | null = null
@@ -155,6 +165,10 @@ export class ConvincedClient {
       throw new Error('orgSlug must contain only letters, numbers, and hyphens.')
     }
     this.orgSlug = options.orgSlug
+    if (options.agentId && !/^[A-Za-z0-9_-]{1,140}$/.test(options.agentId)) {
+      throw new Error('agentId must be a valid Convinced deployment ID.')
+    }
+    if (options.agentId) this.agentId = options.agentId
     this.sessionFingerprint = browserVisitorKey(this.orgSlug)
     this.apiBase = normalizeApiBase(options.apiBase ?? DEFAULT_API_BASE)
     if (options.widgetToken) this.widgetToken = options.widgetToken
@@ -199,6 +213,39 @@ export class ConvincedClient {
 
   registerTool(tool: ClientTool): () => void {
     return this.tools.register(tool)
+  }
+
+  /** Publish the client's existing registry through WebMCP when the browser supports it. */
+  publishToolsToWebMcp(options: PublishClientToolsToWebMcpOptions = {}) {
+    const modelContext = options.modelContext ?? getWebMcpModelContext()
+    if (!modelContext) return null
+    return publishRegistryToWebMcp(this.tools, {
+      modelContext,
+      execution: () => ({
+        orgSlug: this.orgSlug,
+        sessionId: this.stateValue.session?.sessionId ?? null,
+        turnId: randomId('webmcp'),
+        surface: 'webmcp',
+      }),
+      authorize: async ({ call, tool, execution }) => {
+        if (tool.consent === 'none') return true
+        const registered = this.tools.get(call.name)
+        if (!registered || !execution.sessionId) return false
+        if (tool.consent === 'session' && this.sessionToolConsent.has(registered)) return true
+        if (!this.authorizeToolCall) return false
+        const allowed = await this.authorizeToolCall({
+          call,
+          tool,
+          orgSlug: this.orgSlug,
+          sessionId: execution.sessionId,
+          round: 0,
+          surface: 'webmcp',
+          signal: execution.signal,
+        })
+        if (allowed && tool.consent === 'session') this.sessionToolConsent.add(registered)
+        return allowed
+      },
+    })
   }
 
   initialize(options: InitializeOptions = {}): Promise<ConvincedClientState> {
@@ -247,13 +294,14 @@ export class ConvincedClient {
 
   private async createSessionInternal(input: WidgetSessionInput): Promise<WidgetSessionResponse> {
     this.assertUsable()
-    if ([...this.sessionVoices].some(voice => ['connecting', 'connected', 'disconnecting'].includes(voice.state.status)) || this.endingSession) {
-      throw new ConvincedSdkError('voice_active', 'End voice before changing the Convinced session.')
+    if ([...this.sessionLives].some(live => ['connecting', 'connected', 'disconnecting'].includes(live.state.status)) || this.endingSession) {
+      throw new ConvincedSdkError('live_active', 'End the live session before changing the Convinced session.')
     }
     const previousSessionId = this.stateValue.session?.sessionId
     const sessionInput = sanitizeSessionInput(input)
     const sessionBody = JSON.stringify({
       ...sessionInput,
+      ...(this.agentId ? { agentId: this.agentId } : {}),
       fingerprint: sessionInput.fingerprint || this.sessionFingerprint,
     })
     assertByteLimit(
@@ -273,9 +321,7 @@ export class ConvincedClient {
     if (session.sessionId !== previousSessionId) {
       this.sessionToolConsent.clear()
       this.behaviorEvents.length = 0
-      this.elevenLabsConversationIds.clear()
-      this.voiceEventIds.clear()
-      this.voiceMessageSources.clear()
+      this.liveEventIds.clear()
       this.demoRequestInFlight.clear()
       this.completedDemoRequests.clear()
       this.visitorIdentity = null
@@ -353,25 +399,6 @@ export class ConvincedClient {
       await this.request(
         `/api/widget/${encodeURIComponent(this.orgSlug)}/visitor-intel?sessionId=${encodeURIComponent(sessionId)}`,
         { headers: this.sessionWriteHeaders() },
-      ),
-    )
-  }
-
-  /**
-   * Mint a short-lived private ElevenLabs WebRTC descriptor from Convinced.
-   * The server resolves the configured agent; callers cannot override it.
-   */
-  async getVoiceCredential(): Promise<WidgetVoiceCredentialResponse> {
-    this.assertUsable()
-    const sessionId = this.requireSessionId()
-    return readJsonResponse<WidgetVoiceCredentialResponse>(
-      await this.request(
-        `/api/widget/${encodeURIComponent(this.orgSlug)}/session/${encodeURIComponent(sessionId)}/voice-token`,
-        {
-          method: 'POST',
-          headers: this.sessionWriteHeaders(),
-          body: '{}',
-        },
       ),
     )
   }
@@ -625,84 +652,68 @@ export class ConvincedClient {
     })
   }
 
-  /** Create headless voice owned by this Convinced session, independently of any renderer. */
-  createVoiceController(options: SessionVoiceOptions = {}): ConvincedVoiceController {
+  /** Create a full-duplex live controller owned by the current Convinced session. */
+  createLiveController(options: SessionLiveOptions = {}): ConvincedLiveController {
     this.assertUsable()
-    let boundSessionId: string | null = null
-    let attempt = 0
-    const controllerKey = randomId('voice')
-    const capture = (role: 'user' | 'assistant', text: string) => {
-      if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
-      const captured = createMessage(role, text)
-      captured.createdAt = Math.max(captured.createdAt, (this.stateValue.messages.at(-1)?.createdAt ?? 0) + 1)
-      this.voiceMessageSources.set(captured.id, controller.conversationId ?? `${controllerKey}_${attempt}`)
-      this.appendMessage(captured)
+    if (this.sessionLives.size > 0) {
+      throw new ConvincedSdkError(
+        'live_controller_exists',
+        'This client already owns a Live controller. Reuse it across voice enable/disable cycles.',
+      )
     }
-    const controller = new ConvincedVoiceController({
-      ...options,
-      orgSlug: this.orgSlug,
-      tools: options.tools ?? this.tools,
-      sessionId: () => boundSessionId,
-      descriptorFactory: async (context) => {
-        this.assertUsable()
-        if (this.creatingSession) throw new ConvincedSdkError('session_in_progress', 'Wait for the pending session request before starting voice.')
-        const sessionId = this.requireSessionId()
-        if (this.endSessionId === sessionId) {
-          throw new ConvincedSdkError('session_ended', 'This session has ended or is closing; renewSession() before starting voice.')
-        }
-        boundSessionId = sessionId
-        attempt += 1
-        const descriptor = options.descriptorFactory
-          ? await options.descriptorFactory({ ...context, sessionId })
-          : options.descriptor ?? this.sessionVoiceDescriptor()
-        return {
-          ...descriptor,
-          ...(options.exactClientTools ? { exactClientTools: options.exactClientTools } : {}),
-          ...(options.genericClientTool !== undefined ? { genericClientTool: options.genericClientTool } : {}),
-          dynamicVariables: { ...descriptor.dynamicVariables, SESSION_ID: sessionId },
-        }
+    let boundSessionId: string | null = null
+    const controller = new ConvincedLiveController({
+      fetch: this.fetchImpl,
+      descriptor: {
+        sessionUrl: () => {
+          this.assertUsable()
+          if (this.creatingSession) throw new ConvincedSdkError('session_in_progress', 'Wait for the pending session request before starting live.')
+          const sessionId = this.requireSessionId()
+          if (this.endSessionId === sessionId) {
+            throw new ConvincedSdkError('session_ended', 'This session has ended or is closing; renewSession() before starting live.')
+          }
+          boundSessionId = sessionId
+          return this.liveSessionUrl(sessionId)
+        },
+        headers: () => Object.fromEntries(this.sessionWriteHeaders()),
       },
-      onConversationId: (id) => {
+      ...(options.onStatusChange ? { onStatusChange: options.onStatusChange } : {}),
+      ...(options.onModeChange ? { onModeChange: options.onModeChange } : {}),
+      ...(options.onConnect ? { onConnect: options.onConnect } : {}),
+      ...(options.onDisconnect ? { onDisconnect: options.onDisconnect } : {}),
+      ...(options.onError ? { onError: options.onError } : {}),
+      onLiveSessionId: (id) => {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
-        this.linkElevenLabsConversation(id)
-        for (const [messageId, source] of this.voiceMessageSources) {
-          if (source === `${controllerKey}_${attempt}`) this.voiceMessageSources.set(messageId, id)
-        }
-        options.onConversationId?.(id)
+        options.onLiveSessionId?.(id)
       },
       onMessage: (message) => {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
-        const text = message.message?.trim()
-        if (!text) return
-        const role = message.source === 'user' ? 'user' : 'assistant'
-        // Provider event IDs are scoped to a connection. Identical words on a later turn are not duplicates.
-        const key = message.event_id === undefined ? null : `${boundSessionId}:${controllerKey}:${attempt}:${controller.conversationId}:${role}:${message.event_id}`
-        if (key && this.voiceEventIds.has(key)) return
-        if (key) this.voiceEventIds.add(key)
-        capture(role, text)
         options.onMessage?.(message)
       },
+      onBackendMessage: (message) => {
+        if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
+        options.onBackendMessage?.(message)
+      },
+      onClientDelegation: async ({ transcript }) => {
+        const delegatedSessionId = boundSessionId
+        if (!delegatedSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
+          throw new ConvincedSdkError('live_session_changed', 'The Live session no longer owns this conversation.')
+        }
+        const response = await this.sendMessage(transcript, {
+          speak: false,
+        })
+        if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
+          throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
+        }
+        return { message: response.text }
+      },
     })
-    controller.on('user_message_sent', text => capture('user', text))
-    this.sessionVoices.add(controller)
+    this.sessionLives.add(controller)
     return controller
   }
 
-  private sessionVoiceDescriptor(): ElevenLabsVoiceDescriptor {
-    const agentId = this.stateValue.config?.elevenLabsAgentId
-    if (typeof agentId !== 'string' || !agentId.trim()) {
-      throw new ConvincedSdkError('voice_not_configured', 'Convinced voice is not configured for this session.')
-    }
-    return { agentId, connectionType: 'webrtc', genericClientTool: false }
-  }
-
-  /** Remember an ElevenLabs conversation id for session-end transcript linking. */
-  linkElevenLabsConversation(conversationId: string): void {
-    const id = conversationId.trim()
-    if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) {
-      throw new Error('ElevenLabs conversation id is invalid.')
-    }
-    this.elevenLabsConversationIds.add(id)
+  private liveSessionUrl(sessionId: string): string {
+    return `${this.apiBase}/api/widget/${encodeURIComponent(this.orgSlug)}/session/${encodeURIComponent(sessionId)}/live`
   }
 
   async endSession(options: EndWidgetSessionOptions = {}): Promise<Record<string, unknown>> {
@@ -733,24 +744,16 @@ export class ConvincedClient {
     options: EndWidgetSessionOptions,
   ): Promise<Record<string, unknown>> {
     // Stop transport first so final messages are included in the same durable transcript.
-    const stopped = await Promise.allSettled([...this.sessionVoices].map(voice => voice.end()))
+    const stopped = await Promise.allSettled([...this.sessionLives].map(live => live.end()))
     for (const result of stopped) {
       if (result.status === 'rejected') this.events.emit('error', result.reason instanceof Error ? result.reason : new Error(String(result.reason)))
     }
-    const suppliedIds = options.elevenLabsConversationIds ?? []
-    for (const id of suppliedIds) this.linkElevenLabsConversation(id)
-    if (options.elevenLabsConversationId) {
-      this.linkElevenLabsConversation(options.elevenLabsConversationId)
-    }
-    const allConversationIds = [...this.elevenLabsConversationIds]
-    const latestConversationId = options.elevenLabsConversationId ?? allConversationIds.at(-1)
     const identity = this.visitorIdentity
     const clientMessages = options.clientMessages ?? this.stateValue.messages.map((message) => ({
       role: message.role,
       content: message.text,
       id: message.id,
       createdAt: message.createdAt,
-      ...(this.voiceMessageSources.has(message.id) ? {sourceId: this.voiceMessageSources.get(message.id)} : {}),
     }))
     const slidesViewed = Array.from(new Set(
       (Array.isArray(options.slidesViewed) ? options.slidesViewed : [])
@@ -764,8 +767,6 @@ export class ConvincedClient {
           sessionId,
           clientMessages,
           ...(slidesViewed.length > 0 ? { slidesViewed } : {}),
-          ...(latestConversationId ? { elevenLabsConversationId: latestConversationId } : {}),
-          ...(allConversationIds.length > 0 ? { elevenLabsConversationIds: allConversationIds } : {}),
           ...(options.email ?? identity?.email ? { email: options.email ?? identity?.email } : {}),
           ...(options.name ?? identity?.name ? { name: options.name ?? identity?.name } : {}),
           ...(options.company ?? identity?.company ? { company: options.company ?? identity?.company } : {}),
@@ -774,8 +775,25 @@ export class ConvincedClient {
     )
   }
 
-  async sendMessage(message: string, options: SendMessageOptions = {}): Promise<ChatMessage> {
+  sendMessage(message: string, options: SendMessageOptions = {}): Promise<ChatMessage> {
+    const queuedSessionId = this.stateValue.session?.sessionId ?? null
+    const run = this.messageQueue.then(
+      () => this.sendMessageNow(message, options, queuedSessionId),
+      () => this.sendMessageNow(message, options, queuedSessionId),
+    )
+    this.messageQueue = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private async sendMessageNow(
+    message: string,
+    options: SendMessageOptions,
+    queuedSessionId: string | null,
+  ): Promise<ChatMessage> {
     this.assertUsable()
+    if (queuedSessionId && queuedSessionId !== this.stateValue.session?.sessionId) {
+      throw new ConvincedSdkError('chat_session_changed', 'The queued message belongs to a previous session.')
+    }
     if (this.endSessionId === this.stateValue.session?.sessionId) throw new ConvincedSdkError('session_ended', 'This session has ended or is closing; renewSession() before sending a message.')
     const trimmed = message.trim()
     if (!trimmed) throw new Error('message must not be empty.')
@@ -790,6 +808,9 @@ export class ConvincedClient {
     }
     if (!this.stateValue.session) await this.initialize()
     const sessionId = this.requireSessionId()
+    if (queuedSessionId && queuedSessionId !== sessionId) {
+      throw new ConvincedSdkError('chat_session_changed', 'The queued message belongs to a previous session.')
+    }
     const history = options.history ?? this.stateValue.messages
       .slice(-MAX_WIDGET_CHAT_HISTORY_MESSAGES)
       .map(toHistoryMessage)
@@ -1005,10 +1026,20 @@ export class ConvincedClient {
         videos: this.stateValue.session?.recommendedVideos ?? [],
       })
       const complete = { ...assistantMessage, text: fullText, content }
+      if (this.stateValue.session?.sessionId !== sessionId) {
+        throw new ConvincedSdkError('chat_session_changed', 'The session changed before the answer completed.')
+      }
       this.replaceMessage(complete)
       this.events.emit('content', { messageId: complete.id, content })
       this.events.emit('message', complete)
       this.patchState({ status: 'ready', activeTurnId: null, error: null })
+      if (options.speak !== false && complete.text.trim()) {
+        for (const live of this.sessionLives) {
+          if (live.state.status !== 'connected') continue
+          try { live.sendBackendResult(complete.text) } catch { /* transport closed */ }
+          break
+        }
+      }
       return complete
     } catch (error) {
       const normalizedError = controller.signal.aborted
@@ -1042,13 +1073,11 @@ export class ConvincedClient {
   destroy(): void {
     if (this.stateValue.status === 'destroyed') return
     this.cancelActiveTurn('Client destroyed.')
-    for (const voice of this.sessionVoices) void voice.end().catch(() => undefined)
-    this.sessionVoices.clear()
-    this.voiceEventIds.clear()
-    this.voiceMessageSources.clear()
+    for (const live of this.sessionLives) void live.end().catch(() => undefined)
+    this.sessionLives.clear()
+    this.liveEventIds.clear()
     this.sessionToolConsent.clear()
     this.behaviorEvents.length = 0
-    this.elevenLabsConversationIds.clear()
     this.demoRequestInFlight.clear()
     this.completedDemoRequests.clear()
     this.visitorIdentity = null
@@ -1115,11 +1144,13 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
+    headers.set('x-convinced-sdk-version', '0.1.2')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 
   private sessionWriteHeaders(): Headers {
     const headers = new Headers()
+    if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
     const capability = this.stateValue.session?.sessionCapability
     if (typeof capability === 'string' && capability.trim()) {
       headers.set('x-widget-session-capability', capability.trim())
@@ -1732,7 +1763,9 @@ function capabilityExecutionSignal(
     'client_tool_capability_expired',
     'The client tool capability expired before all host actions could be resumed.',
   ))
-  const timeout = remainingMs <= 0 ? undefined : setTimeout(expire, remainingMs)
+  const timeout = remainingMs <= 0
+    ? undefined
+    : setTimeout(expire, Math.min(remainingMs, 2_147_483_647))
   if (remainingMs <= 0) expire()
 
   return {

@@ -1,7 +1,7 @@
 {
   "name": "@convinced/widget-sdk",
-  "version": "0.1.1-webmcp.3",
-  "description": "Voice-first, headless, and default browser UI SDK for Convinced widgets.",
+  "version": "0.1.2",
+  "description": "Full-duplex voice, chat, WebMCP, and host-page tools for Convinced experiences.",
   "homepage": "https://github.com/Get-Convinced/convinced-widget-sdk#readme",
   "bugs": {
     "url": "https://github.com/Get-Convinced/convinced-widget-sdk/issues"
@@ -28,10 +28,6 @@
   "files": [
     "dist",
     "examples/vanilla",
-    "examples/voice-spa",
-    "examples/custom-brand",
-    "examples/managed-parity",
-    "examples/shared",
     "AGENT_BUILD_PROMPT.txt",
     "README.md",
     "docs/webmcp-handoff.md",
@@ -43,17 +39,11 @@
   "scripts": {
     "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test",
-    "test:watch": "bun test --watch",
+    "test": "bun test tests",
+    "test:watch": "bun test tests --watch",
     "example": "bun run examples/vanilla/server.ts",
-    "example:voice": "bun run examples/voice-spa/server.ts",
-    "example:custom": "bun run examples/custom-brand/server.ts",
-    "example:managed": "bun run examples/managed-parity/server.ts",
-    "example:real": "bun run examples/real-org-lab/server.ts",
     "test:package": "bun run scripts/test-package.ts",
-    "test:webmcp:native": "node scripts/test-webmcp-native.mjs",
-    "export:webmcp:agent": "node scripts/export-webmcp-agent.mjs",
-    "check": "bun run typecheck && bun test && bun run build && bun run test:package",
+    "check": "bun run typecheck && bun run test && bun run build && bun run test:package",
     "pack:check": "npm pack --dry-run",
     "prepack": "bun run check"
   },
@@ -63,11 +53,12 @@
   "keywords": [
     "convinced",
     "voice-widget",
-    "elevenlabs",
+    "gpt-live",
+    "openai",
     "chat-widget",
     "sales-agent",
     "browser-tools",
-    "mcp"
+    "webmcp"
   ],
   "author": "Convinced",
   "license": "MIT",
@@ -78,9 +69,7 @@
   "engines": {
     "node": ">=22.14.0"
   },
-  "dependencies": {
-    "@elevenlabs/client": "^1.15.0"
-  },
+  "dependencies": {},
   "packageManager": "bun@1.3.14",
   "devDependencies": {
     "@types/bun": "^1.1.0",

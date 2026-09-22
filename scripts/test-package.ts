@@ -78,8 +78,8 @@ import {
 const config: WidgetConfig = { orgName: 'Example', orgSlug: 'example' }
 const client = new ConvincedClient({ orgSlug: config.orgSlug })
 void client.state
-const voice = client.createVoiceController()
-void voice.start
+const live = client.createLiveController()
+void live.start
 void client.endSession
 const admin = new ConvincedAgentAdmin({ orgSlug: config.orgSlug, agentId: 'agent_example', apiBase: 'https://app.example' })
 void admin.getPrompt
@@ -178,7 +178,9 @@ async function run(command: string[], cwd: string): Promise<string> {
 function processEnv(): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [key, value] of Object.entries(Bun.env)) {
-    if (typeof value === 'string') result[key] = value
+    if (typeof value === 'string' && key !== 'npm_config_dry_run' && key !== 'NPM_CONFIG_DRY_RUN') {
+      result[key] = value
+    }
   }
   return result
 }

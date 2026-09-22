@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createWebMcpBridge, publishRegistryToWebMcp, ClientToolRegistry, HOST_TOOL_PROTOCOL_VERSION,
+import { createWebMcpBridge, publishRegistryToWebMcp, ClientToolRegistry, ConvincedClient, HOST_TOOL_PROTOCOL_VERSION,
   type WebMcpModelContext, type WebMcpRegisteredTool } from '../src'
 
 function fixture() {
@@ -139,5 +139,77 @@ describe('WebMCP generic bridge', () => {
     expect(called).toBe(0)
     publisher.dispose()
     expect(lifecycle?.aborted).toBe(true)
+  })
+
+  test('client publishes its shared registry with one call', async () => {
+    const f = fixture()
+    let registered: Parameters<NonNullable<WebMcpModelContext['registerTool']>>[0] | undefined
+    f.modelContext.registerTool = (tool) => { registered = tool }
+    const contexts: Array<{ orgSlug: string; sessionId: string | null; surface?: string }> = []
+    const tools = new ClientToolRegistry([{
+      version: HOST_TOOL_PROTOCOL_VERSION,
+      name: 'host_read_selection',
+      description: 'Read the selected item',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      locality: 'host', effect: 'read', consent: 'none', timeoutMs: 1_000,
+      handler: async (_args, context) => {
+        contexts.push(context)
+        return { selected: 'atlas' }
+      },
+    }])
+    const client = new ConvincedClient({ orgSlug: 'test', tools })
+
+    const publisher = client.publishToolsToWebMcp({ modelContext: f.modelContext })
+    await publisher?.ready
+    expect(await registered?.execute({}, {})).toEqual({ selected: 'atlas' })
+    expect(contexts).toEqual([expect.objectContaining({
+      orgSlug: 'test',
+      sessionId: null,
+      surface: 'webmcp',
+    })])
+    publisher?.dispose()
+  })
+
+  test('client applies its existing session consent policy to published WebMCP tools', async () => {
+    const f = fixture()
+    let registered: Parameters<NonNullable<WebMcpModelContext['registerTool']>>[0] | undefined
+    f.modelContext.registerTool = (tool) => { registered = tool }
+    let approvals = 0
+    let executions = 0
+    const client = new ConvincedClient({
+      orgSlug: 'test',
+      apiBase: 'https://mock.example',
+      fetch: (async () => Response.json({
+        sessionId: 'session_webmcp',
+        sessionCapability: 'capability_webmcp',
+        config: { orgName: 'Test', orgSlug: 'test', slidesEnabled: false, suggestedQuestions: [] },
+      })) as unknown as typeof fetch,
+      tools: [{
+        version: HOST_TOOL_PROTOCOL_VERSION,
+        name: 'host_open_record',
+        description: 'Open a record',
+        inputSchema: {
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id'],
+          additionalProperties: false,
+        },
+        locality: 'host', effect: 'navigate', consent: 'session', timeoutMs: 1_000,
+        handler: async ({ id }) => { executions++; return { opened: String(id) } },
+      }],
+      authorizeToolCall: ({ surface }) => {
+        approvals++
+        expect(surface).toBe('webmcp')
+        return true
+      },
+    })
+    await client.createSession()
+
+    const publisher = client.publishToolsToWebMcp({ modelContext: f.modelContext })
+    await publisher?.ready
+    expect(await registered?.execute({ id: 'one' }, {})).toEqual({ opened: 'one' })
+    expect(await registered?.execute({ id: 'two' }, {})).toEqual({ opened: 'two' })
+    expect({ approvals, executions }).toEqual({ approvals: 1, executions: 2 })
+    publisher?.dispose()
   })
 })
