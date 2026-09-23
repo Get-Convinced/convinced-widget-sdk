@@ -154,7 +154,7 @@ describe('ConvincedClient transport', () => {
     expect(body).not.toHaveProperty('clientToolResults')
   })
 
-  test('accumulates all results across a two-round continuation chain', async () => {
+  test('sends only the current signed batch across a two-round continuation chain', async () => {
     const bodies: JsonObject[] = []
     const registry = new ClientToolRegistry([
       tool('host_first_step', async () => ({ first: true })),
@@ -181,10 +181,7 @@ describe('ConvincedClient transport', () => {
 
     await client.sendMessage('Run both steps')
     expect((bodies[1]?.clientToolResults as unknown[]).length).toBe(1)
-    expect((bodies[2]?.clientToolResults as Array<{ callId: string }>).map((result) => result.callId)).toEqual([
-      'call_first',
-      'call_second',
-    ])
+    expect((bodies[2]?.clientToolResults as Array<{ callId: string }>).map((result) => result.callId)).toEqual(['call_second'])
     expect(bodies[2]?.clientToolCapability).toBe('capability-two')
     expect(new Set(bodies.map((body) => body.clientTurnId)).size).toBe(1)
   })

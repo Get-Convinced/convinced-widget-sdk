@@ -50,6 +50,35 @@ afterEach(() => {
 })
 
 describe('GPT Live WebRTC controller', () => {
+  test('ending during microphone permission prevents a late Live connection', async () => {
+    installBrowser()
+    let grantMicrophone!: (media: MediaStream) => void
+    const microphone = new Promise<MediaStream>((resolve) => { grantMicrophone = resolve })
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { mediaDevices: { getUserMedia: () => microphone } },
+    })
+    let liveRequests = 0
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        liveRequests += 1
+        return Response.json({})
+      }) as typeof fetch,
+    })
+
+    const pendingStart = controller.start()
+    expect(controller.state.status).toBe('connecting')
+    await controller.end()
+    expect(controller.state.status).toBe('disconnected')
+    grantMicrophone({ getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream)
+    await pendingStart
+
+    expect(track.stopped).toBe(true)
+    expect(controller.state.status).toBe('disconnected')
+    expect(liveRequests).toBe(0)
+  })
+
   test('uses the official protocol, mute, and graceful close', async () => {
     installBrowser()
     let requestBody: JsonObject = {}
@@ -180,7 +209,7 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveCapability).toBe('capability_owned')
     expect(liveWidgetToken).toBe('widget_token')
     expect(sessionBody.agentId).toBe('deployment_live')
-    expect(sdkVersion).toBe('0.1.3')
+    expect(sdkVersion).toBe('0.1.4')
     expect(Object.keys(liveBody).sort()).toEqual(['sdp'])
     expect(liveCreates).toBe(1)
     expect(chatCalls).toBe(3)

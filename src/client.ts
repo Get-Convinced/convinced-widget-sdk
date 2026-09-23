@@ -822,7 +822,7 @@ export class ConvincedClient {
     const clientTools = this.tools.definitions()
     const clientTurnId = clientTools.length > 0 ? protocolTurnId() : null
     const seenClientToolCallIds = new Set<string>()
-    const accumulatedClientToolResults: ClientToolResult[] = []
+    let currentClientToolResults: ClientToolResult[] = []
 
     const controller = new AbortController()
     this.activeTurnController = controller
@@ -859,7 +859,7 @@ export class ConvincedClient {
           clientTurnId: clientTools.length > 0 ? clientTurnId : undefined,
           resumeClientTurn: continuation ? true : undefined,
           clientToolCapability: continuation?.clientToolCapability,
-          clientToolResults: continuation ? accumulatedClientToolResults : undefined,
+          clientToolResults: continuation ? currentClientToolResults : undefined,
         }
         const serializedBody = serializeChatRequest(body)
         assertByteLimit(
@@ -1005,7 +1005,9 @@ export class ConvincedClient {
         } finally {
           capabilityExecution.dispose()
         }
-        accumulatedClientToolResults.push(...results)
+        // Each capability signs only its own batch. Results from earlier
+        // rounds must not be resent with the next signed continuation.
+        currentClientToolResults = results
         continuation = {
           clientToolCapability: pause.capability,
           ...(pause.expiresAt !== undefined ? { expiresAt: pause.expiresAt } : {}),
@@ -1144,7 +1146,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.3')
+    headers.set('x-convinced-sdk-version', '0.1.4')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 

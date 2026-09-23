@@ -1,6 +1,6 @@
 # Speech and session ownership
 
-SDK 0.1.3 keeps one Convinced session and one Luna conversation across text, speech, media, knowledge, and host tools. `gpt-live-1` supplies optional full-duplex audio; it does not own a second assistant brain.
+SDK 0.1.4 keeps one Convinced session and one Luna conversation across text, speech, media, knowledge, and host tools. `gpt-live-1` supplies optional full-duplex audio; it does not own a second assistant brain.
 
 ```ts
 const client = new ConvincedClient({ orgSlug, agentId, tools })
