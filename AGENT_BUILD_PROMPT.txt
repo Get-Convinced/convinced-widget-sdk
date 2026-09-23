@@ -1,11 +1,11 @@
-You are integrating @convinced/widget-sdk@0.1.4 into a customer-owned website.
+You are integrating @convinced/widget-sdk@0.1.5 into a customer-owned website.
 
 GOAL
-Build one headless Convinced agent that works on this website's UI and capabilities. Keep one Convinced session and one Luna conversation across typed input, spoken input, knowledge, Markdown/media, page tools, identity, and handoff. The host application owns all layout and visual behavior.
+Build one headless Convinced agent that works on this website's UI and capabilities. Keep one Convinced session across typed input, Live conversation, Luna-delegated work, knowledge, Markdown/media, page tools, identity, and handoff. The host application owns all layout and visual behavior.
 
 ARCHITECTURE
 - `gpt-6-luna` is the canonical reasoning runtime. Its message is the visible answer.
-- `gpt-live-1` is optional full-duplex speech input/output. It delegates recognized speech to the same Luna chat and speaks the verified Luna result naturally.
+- `gpt-live-1` is optional full-duplex speech input/output. It handles brief conversation directly, delegates organization knowledge and actions to the same Luna chat, and speaks verified Luna results naturally.
 - Typed input always calls `client.sendMessage()`, including while voice is active.
 - `live.end()` turns voice off without ending chat. `client.endSession()` closes the whole experience.
 - Chat-only flows must not create a Live session.
