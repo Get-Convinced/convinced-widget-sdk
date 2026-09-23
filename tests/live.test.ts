@@ -180,7 +180,7 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveCapability).toBe('capability_owned')
     expect(liveWidgetToken).toBe('widget_token')
     expect(sessionBody.agentId).toBe('deployment_live')
-    expect(sdkVersion).toBe('0.1.2')
+    expect(sdkVersion).toBe('0.1.3')
     expect(Object.keys(liveBody).sort()).toEqual(['sdp'])
     expect(liveCreates).toBe(1)
     expect(chatCalls).toBe(3)
