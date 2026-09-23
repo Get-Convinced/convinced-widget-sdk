@@ -861,7 +861,7 @@ export class ConvincedClient {
           clientToolCapability: continuation?.clientToolCapability,
           clientToolResults: continuation ? accumulatedClientToolResults : undefined,
         }
-        const serializedBody = JSON.stringify(body)
+        const serializedBody = serializeChatRequest(body)
         assertByteLimit(
           serializedBody,
           MAX_WIDGET_CHAT_REQUEST_BYTES,
@@ -1144,7 +1144,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.2')
+    headers.set('x-convinced-sdk-version', '0.1.3')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 
@@ -1523,17 +1523,78 @@ export function normalizeCampaignToken(value: string): string {
 function sessionChatContext(state: ConvincedClientState): SendMessageOptions['context'] {
   const session = state.session
   if (!session) return {}
+  const recommendedSlides = session.personalization?.recommendedSlides?.length
+    ? session.personalization.recommendedSlides
+    : session.recommendedSlides
+  // The server uses slideMetadata when present. Send a compact catalog of every
+  // available filename; retain rich metadata and image URLs locally for display.
+  const slideMetadata: Record<string, SlideMetadata> = Object.create(null) as Record<string, SlideMetadata>
+  for (const slide of state.slides) {
+    slideMetadata[slide.filename] = {
+      filename: slide.filename,
+      title: slide.filename.replace(/[-_]/g, ' ').replace(/\.[^.]+$/, ''),
+      description: '',
+      keyPoints: [],
+    }
+  }
+  for (const [filename, metadata] of Object.entries(state.slideMetadata)) {
+    slideMetadata[filename] = {
+      filename: metadata.filename || filename,
+      title: metadata.title || filename,
+      description: metadata.description?.slice(0, 240) ?? '',
+      keyPoints: [],
+      ...(metadata.slideType ? { slideType: metadata.slideType } : {}),
+      ...(metadata.tags?.length ? { tags: metadata.tags.slice(0, 6) } : {}),
+      ...(typeof metadata.slideIntent?.topic === 'string'
+        ? { slideIntent: { topic: metadata.slideIntent.topic.slice(0, 120) } }
+        : {}),
+    }
+  }
   return {
     ...(typeof session.knowledgeKit === 'string' ? { knowledgeKit: session.knowledgeKit } : {}),
-    ...(session.recommendedSlides !== undefined && session.recommendedSlides !== null
-      ? { recommendedSlides: session.recommendedSlides }
+    ...(recommendedSlides !== undefined && recommendedSlides !== null
+      ? { recommendedSlides }
       : {}),
     ...(session.recommendedVideos !== undefined && session.recommendedVideos !== null
       ? { recommendedVideos: session.recommendedVideos }
       : {}),
-    ...(state.slides.length > 0 ? { slides: state.slides } : {}),
-    ...(Object.keys(state.slideMetadata).length > 0 ? { slideMetadata: state.slideMetadata } : {}),
+    ...(Object.keys(slideMetadata).length > 0 ? { slideMetadata } : {}),
   }
+}
+
+function serializeChatRequest(body: Record<string, unknown>): string {
+  let serialized = JSON.stringify(body)
+  if (new TextEncoder().encode(serialized).byteLength <= MAX_WIDGET_CHAT_REQUEST_BYTES) {
+    return serialized
+  }
+  // Preserve every slide filename before dropping a large optional catalog.
+  if (body.slideMetadata && typeof body.slideMetadata === 'object') {
+    body.slideMetadata = Object.fromEntries(
+      Object.entries(body.slideMetadata).map(([filename, value]) => {
+        const metadata = value as Partial<SlideMetadata>
+        return [filename, {
+          filename,
+          title: metadata.title ?? filename,
+          description: '',
+          keyPoints: [],
+        }]
+      }),
+    )
+    serialized = JSON.stringify(body)
+    if (new TextEncoder().encode(serialized).byteLength <= MAX_WIDGET_CHAT_REQUEST_BYTES) {
+      return serialized
+    }
+  }
+  // Media catalogs remain in client state for rendering. A large site must
+  // still be able to send its message and governed tools.
+  for (const field of ['slides', 'recommendedVideos', 'slideMetadata', 'recommendedSlides']) {
+    delete body[field]
+    serialized = JSON.stringify(body)
+    if (new TextEncoder().encode(serialized).byteLength <= MAX_WIDGET_CHAT_REQUEST_BYTES) {
+      return serialized
+    }
+  }
+  return serialized
 }
 
 function sanitizeIdentity(input: VisitorIdentity): VisitorIdentity {

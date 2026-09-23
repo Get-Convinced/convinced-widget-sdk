@@ -1,6 +1,6 @@
 {
   "name": "@convinced/widget-sdk",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Full-duplex voice, chat, WebMCP, and host-page tools for Convinced experiences.",
   "homepage": "https://github.com/Get-Convinced/convinced-widget-sdk#readme",
   "bugs": {

@@ -4,6 +4,7 @@ import {
   ConvincedClient,
   ConvincedSdkError,
   HOST_TOOL_PROTOCOL_VERSION,
+  MAX_WIDGET_CHAT_REQUEST_BYTES,
   type ClientTool,
   type JsonObject,
 } from '../src'
@@ -511,11 +512,105 @@ describe('ConvincedClient transport', () => {
       recommendedVideos: [
         { title: 'Warehouse tour', url: 'https://youtu.be/demo', sourceType: 'youtube_video' },
       ],
-      slides: [{ key: 'roi', filename: 'roi.svg', url: 'https://cdn.example/roi.svg' }],
       slideMetadata: {
         'roi.svg': { filename: 'roi.svg', title: 'ROI', description: 'Proof', keyPoints: [] },
       },
     })
+  })
+
+  test('a large slide catalog stays renderable without blocking the first chat turn', async () => {
+    let chatBody: JsonObject | undefined
+    const slides = Array.from({ length: 422 }, (_, index) => ({
+      key: `slide-${index}`,
+      filename: `slide-${index}.png`,
+      url: `https://cdn.example/slide-${index}.png`,
+    }))
+    const metadata = Array.from({ length: 248 }, (_, index) => ({
+      filename: `slide-${index}.png`,
+      title: `Slide ${index}`,
+      description: 'Grounded catalog detail. '.repeat(180),
+      keyPoints: [],
+    }))
+    const fetchMock = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/config')) return Response.json({ ...config, slidesEnabled: true })
+      if (path.endsWith('/session')) return Response.json({
+        sessionId: 'large-slide-session',
+        config: { ...config, slidesEnabled: true },
+        knowledgeKit: 'Governed organization knowledge. '.repeat(1400),
+        recommendedSlides: [{ filename: 'slide-200.png', title: 'Relevant proof', slideType: 'proof' }],
+        personalization: {
+          recommendedSlides: [{ filename: 'slide-201.png', title: 'Personalized proof', slideType: 'proof' }],
+        },
+      })
+      if (path.endsWith('/slides/metadata')) return Response.json({ slides: metadata })
+      if (path.endsWith('/slides')) return Response.json({ slides })
+      if (path.endsWith('/chat')) {
+        chatBody = await requestBody(init)
+        return sse([{ delta: 'Here is the supplier workflow.' }])
+      }
+      throw new Error(`Unexpected mock URL: ${path}`)
+    }) as typeof fetch
+    const client = new ConvincedClient({ orgSlug: 'demo', apiBase: 'https://mock.example', fetch: fetchMock })
+    await client.initialize()
+    const answer = await client.sendMessage('Show the supplier workflow')
+
+    expect(answer.text).toBe('Here is the supplier workflow.')
+    expect(Object.keys(client.state.slideMetadata)).toHaveLength(248)
+    expect(chatBody?.knowledgeKit).toBe('Governed organization knowledge. '.repeat(1400))
+    expect(chatBody?.recommendedSlides).toEqual([
+      { filename: 'slide-201.png', title: 'Personalized proof', slideType: 'proof' },
+    ])
+    expect(chatBody?.slides).toBeUndefined()
+    expect(chatBody?.slideMetadata).toMatchObject({
+      'slide-200.png': expect.objectContaining({ title: 'Slide 200' }),
+    })
+    expect(Object.keys(chatBody?.slideMetadata as object)).toHaveLength(422)
+    expect(new TextEncoder().encode(JSON.stringify(chatBody)).byteLength)
+      .toBeLessThanOrEqual(MAX_WIDGET_CHAT_REQUEST_BYTES)
+  })
+
+  test('a huge catalog keeps all slide filenames after optional descriptions are trimmed', async () => {
+    let chatBody: JsonObject | undefined
+    const recommendedSlides = Array.from({ length: 30 }, (_, index) => ({
+      filename: `proof-${index}.png`, title: `Proof ${index}`, slideType: 'proof',
+    }))
+    const slides = Array.from({ length: 1500 }, (_, index) => ({
+      key: `proof-${index}`, filename: `proof-${index}.png`, url: `https://cdn.example/proof-${index}.png`,
+    }))
+    const fetchMock = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/config')) return Response.json({ ...config, slidesEnabled: true })
+      if (path.endsWith('/session')) return Response.json({
+        sessionId: 'oversized-media-session',
+        config: { ...config, slidesEnabled: true },
+        knowledgeKit: 'Grounded knowledge',
+        recommendedSlides,
+      })
+      if (path.endsWith('/slides/metadata')) return Response.json({
+        slides: slides.map(slide => ({
+          filename: slide.filename, title: slide.key,
+          description: 'Media description '.repeat(20), keyPoints: [],
+        })),
+      })
+      if (path.endsWith('/slides')) return Response.json({ slides })
+      if (path.endsWith('/chat')) {
+        chatBody = await requestBody(init)
+        return sse([{ delta: 'Answer' }])
+      }
+      throw new Error(`Unexpected mock URL: ${path}`)
+    }) as typeof fetch
+    const client = new ConvincedClient({ orgSlug: 'demo', apiBase: 'https://mock.example', fetch: fetchMock })
+    await client.initialize()
+    const answer = await client.sendMessage('Show proof')
+
+    expect(answer.text).toBe('Answer')
+    expect(chatBody?.message).toBe('Show proof')
+    expect(chatBody?.knowledgeKit).toBe('Grounded knowledge')
+    expect(Object.keys(chatBody?.slideMetadata as object)).toHaveLength(1500)
+    expect((chatBody?.slideMetadata as Record<string, { description: string }>)['proof-0.png']?.description).toBe('')
+    expect(chatBody?.recommendedSlides).toEqual(recommendedSlides)
+    expect(Object.keys(client.state.slideMetadata)).toHaveLength(1500)
   })
 
   test('syncs identity, behavior, page changes, and transcript through lifecycle APIs', async () => {
