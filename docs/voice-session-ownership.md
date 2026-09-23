@@ -1,6 +1,6 @@
 # Speech and session ownership
 
-SDK 0.1.5 keeps one Convinced session across text, speech, media, knowledge, and host tools. `gpt-live-1` supplies optional full-duplex conversation; Luna handles grounded answers and tool decisions.
+SDK 0.1.6 keeps one Convinced session across text, speech, media, knowledge, and host tools. `gpt-live-1` supplies optional full-duplex conversation; Luna handles grounded answers and tool decisions.
 
 ```ts
 const client = new ConvincedClient({ orgSlug, agentId, tools })
@@ -10,6 +10,8 @@ await live.start({ startMuted: false })
 ```
 
 Live can handle brief conversational turns directly. The SDK records completed Live-native user and assistant exchanges in the same session history and emits a state update without duplicating the Live caption event. Typed and delegated Luna turns inherit that context in order. Luna uses the same prompt, knowledge, and tools as typed chat. Its canonical answer appears through the normal client message/content events. The Live connection receives a bounded, faithful copy as commentary and speaks a natural rendering. If another delegation arrives first, the older answer is not spoken.
+
+Each Live commentary or thinking append stays within a conservative 450-byte limit. The SDK strips media directives from spoken excerpts and splits page context into ordered updates without dropping the 8 KiB aggregate context.
 
 Typed messages always use `client.sendMessage()`. If Live is connected, the completed Luna answer is also sent to Live for speech. Ending Live stops microphone/audio transport and leaves the chat session usable:
 

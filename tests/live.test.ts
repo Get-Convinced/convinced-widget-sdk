@@ -99,13 +99,23 @@ describe('GPT Live WebRTC controller', () => {
     expect(peer.channel.sent).toContainEqual(expect.objectContaining({
       type: 'session.thinking.append', delegation_id: null,
     }))
-    controller.sendBackendResult(`Margin changed by -5%.\n\n${'Detail. '.repeat(2_000)}\nFinal caveat: -2 units.`)
+    controller.sendBackendResult(`Margin changed by -5%. [SLIDE:dispatch.png]\n\n${'Detail. '.repeat(2_000)}\nFinal caveat: -2 units.`)
     const commentary = [...peer.channel.sent].reverse()
       .find((event: JsonObject) => event.type === 'session.commentary.append')
     expect(commentary?.content).toContain('Margin changed by -5%.')
     expect(commentary?.content).toContain('[Middle omitted for voice context]')
     expect(commentary?.content).toContain('Final caveat: -2 units.')
-    expect(new TextEncoder().encode(String(commentary?.content)).byteLength).toBeLessThanOrEqual(8 * 1024)
+    expect(commentary?.content).not.toContain('[SLIDE:')
+    expect(new TextEncoder().encode(String(commentary?.content)).byteLength).toBeLessThanOrEqual(450)
+
+    const context = `Route: ${'🧭'.repeat(1_500)} End of page context.`
+    const priorEvents = peer.channel.sent.length
+    controller.sendContextualUpdate(context, 'dispatch')
+    const thinking = peer.channel.sent.slice(priorEvents)
+      .filter((event: JsonObject) => event.type === 'session.thinking.append')
+    expect(thinking.length).toBeGreaterThan(1)
+    expect(thinking.every((event: JsonObject) => new TextEncoder().encode(String(event.content)).byteLength <= 450)).toBe(true)
+    expect(thinking.map((event: JsonObject) => String(event.content)).join('').replace('[context:dispatch]\n', '')).toBe(context)
 
     controller.setMuted(true)
     expect(track.enabled).toBe(false)
@@ -209,7 +219,7 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveCapability).toBe('capability_owned')
     expect(liveWidgetToken).toBe('widget_token')
     expect(sessionBody.agentId).toBe('deployment_live')
-    expect(sdkVersion).toBe('0.1.5')
+    expect(sdkVersion).toBe('0.1.6')
     expect(Object.keys(liveBody).sort()).toEqual(['sdp'])
     expect(liveCreates).toBe(1)
     expect(chatCalls).toBe(3)

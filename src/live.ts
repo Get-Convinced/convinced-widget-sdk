@@ -1,6 +1,7 @@
 import { TypedEventEmitter } from './events.js'
 
 export const MAX_LIVE_CONTEXT_BYTES = 8 * 1024
+const MAX_LIVE_APPEND_BYTES = 450
 const START_TIMEOUT_MS = 20_000
 const CLOSE_TIMEOUT_MS = 15_000
 const ICE_TIMEOUT_MS = 10_000
@@ -261,12 +262,20 @@ export class ConvincedLiveController {
   sendContextualUpdate(text: string, contextId?: string): void {
     const context = bounded(text, 'context', MAX_LIVE_CONTEXT_BYTES)
     const prefix = contextId ? `[context:${bounded(contextId, 'contextId', 128)}]\n` : ''
-    this.send({
-      type: 'session.thinking.append',
-      event_id: id('context'),
-      delegation_id: null,
-      content: `${prefix}${context}`,
-    })
+    const encoder = new TextEncoder()
+    let chunk = prefix
+    let chunkBytes = encoder.encode(prefix).byteLength
+    for (const character of context) {
+      const characterBytes = encoder.encode(character).byteLength
+      if (chunkBytes + characterBytes > MAX_LIVE_APPEND_BYTES) {
+        this.send({ type: 'session.thinking.append', event_id: id('context'), delegation_id: null, content: chunk })
+        chunk = ''
+        chunkBytes = 0
+      }
+      chunk += character
+      chunkBytes += characterBytes
+    }
+    if (chunk) this.send({ type: 'session.thinking.append', event_id: id('context'), delegation_id: null, content: chunk })
   }
 
   private async startInternal(generation: number, context: LiveStartContext): Promise<ConvincedLiveState> {
@@ -671,7 +680,7 @@ function liveCommentary(value: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   if (!faithful) throw new Error('backend speech result must not be empty.')
-  return boundedWithMiddleOmission(faithful, MAX_LIVE_CONTEXT_BYTES)
+  return boundedWithMiddleOmission(faithful, MAX_LIVE_APPEND_BYTES)
 }
 
 function stripMarkdownLinks(value: string): string {
