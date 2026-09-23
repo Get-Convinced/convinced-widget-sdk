@@ -7,6 +7,9 @@ const ICE_TIMEOUT_MS = 10_000
 const TRANSCRIPT_IDLE_MS = 1_000
 const DELEGATION_SETTLE_MS = 150
 const DELEGATION_TRANSCRIPT_TIMEOUT_MS = 2_000
+// Live does not mark the final spoken fragment for a backend result. Keep its
+// provenance briefly across overlapping user speech and output pauses.
+const BACKEND_SPEECH_GRACE_MS = 5_000
 
 export type LiveStatus = 'idle' | 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'error'
 export type LiveMode = 'listening' | 'speaking' | 'overlap'
@@ -79,6 +82,8 @@ export interface ConvincedLiveControllerOptions {
   onLiveSessionId?: (liveSessionId: string) => void
   onDisconnect?: () => void
   onError?: (error: Error, context?: unknown) => void
+  /** @internal Record an exchange answered directly by Live in the shared conversation. */
+  onNativeExchange?: (user: string, assistant: string) => void
   onClientDelegation?: (
     delegation: LiveClientDelegation,
   ) => LiveClientDelegationResult | Promise<LiveClientDelegationResult>
@@ -100,6 +105,7 @@ type TranscriptBuffer = {
   startMs?: number
   endMs?: number
   timer: ReturnType<typeof setTimeout> | null
+  backendSpeech?: boolean
 }
 type PendingDelegation = {
   delegation: LiveClientDelegation
@@ -119,7 +125,7 @@ type ServerEvent = {
   delegation_id?: unknown
 }
 
-/** Full-duplex GPT-Live WebRTC that delegates every turn to Convinced chat. */
+/** Full-duplex GPT-Live WebRTC with client delegation for grounded work. */
 export class ConvincedLiveController {
   private readonly events = new TypedEventEmitter<ConvincedLiveControllerEventMap>()
   private readonly handledDelegations = new Set<string>()
@@ -140,6 +146,9 @@ export class ConvincedLiveController {
   private sessionClosed: (() => void) | null = null
   private readonly inputTranscriptSegments: string[] = []
   private readonly pendingDelegations: PendingDelegation[] = []
+  private latestDelegationId: string | null = null
+  private backendSpeechActive = false
+  private backendSpeechUntil = 0
   private delegationTimer: ReturnType<typeof setTimeout> | null = null
   private lastInputTranscriptAt = 0
   private inputTranscriptEndMs: number | undefined
@@ -174,6 +183,9 @@ export class ConvincedLiveController {
     this.handledDelegations.clear()
     this.inputTranscriptSegments.length = 0
     this.pendingDelegations.length = 0
+    this.latestDelegationId = null
+    this.backendSpeechActive = false
+    this.backendSpeechUntil = 0
     if (this.delegationTimer) clearTimeout(this.delegationTimer)
     this.delegationTimer = null
     this.update({ status: 'connecting', mode: null, muted: context.startMuted === true, liveSessionId: null, error: null })
@@ -228,9 +240,16 @@ export class ConvincedLiveController {
     this.output.volume = volume
   }
 
+  /** @internal Include a just-spoken Live reply before the next typed chat turn. */
+  flushNativeContext(): void {
+    if (this.outputTranscript.text) this.flushTranscript('assistant')
+  }
+
   /** Give a verified backend result to GPT Live for natural spoken paraphrasing. */
   sendBackendResult(text: string, delegationId: string | null = null): void {
     const content = liveCommentary(text)
+    this.backendSpeechActive = true
+    this.backendSpeechUntil = Date.now() + BACKEND_SPEECH_GRACE_MS
     this.send({
       type: 'session.commentary.append',
       event_id: id('commentary'),
@@ -268,7 +287,12 @@ export class ConvincedLiveController {
       this.output = output
       peer.ontrack = (event) => {
         if (event.streams[0]) output.srcObject = event.streams[0]
-        void output.play().catch(() => undefined)
+        void output.play().catch((cause: unknown) => {
+          if (generation !== this.generation) return
+          const error = cause instanceof Error ? cause : new Error('Live audio playback failed.')
+          this.events.emit('error', error)
+          call(() => this.options.onError?.(error, { stage: 'audio_playback' }))
+        })
       }
       for (const track of media.getTracks()) peer.addTrack(track, media)
 
@@ -370,6 +394,7 @@ export class ConvincedLiveController {
       const delegationId = validId(event.delegation.id, 256)
       if (!delegationId || this.handledDelegations.has(delegationId)) return
       this.handledDelegations.add(delegationId)
+      this.latestDelegationId = delegationId
       this.pendingDelegations.push({
         generation,
         receivedAt: Date.now(),
@@ -398,6 +423,14 @@ export class ConvincedLiveController {
     const endMs = typeof event.end_ms === 'number' ? event.end_ms : undefined
     if (buffer.text && startMs !== undefined && buffer.endMs !== undefined && startMs - buffer.endMs > TRANSCRIPT_IDLE_MS) {
       this.flushTranscript(role)
+    }
+    if (role === 'assistant' && !buffer.text && this.backendSpeechActive) {
+      if (Date.now() <= this.backendSpeechUntil) {
+        buffer.backendSpeech = true
+        this.backendSpeechUntil = Date.now() + BACKEND_SPEECH_GRACE_MS
+      } else {
+        this.backendSpeechActive = false
+      }
     }
     buffer.text += delta
     if (!buffer.firstEventId && typeof event.event_id === 'string') buffer.firstEventId = event.event_id
@@ -435,6 +468,11 @@ export class ConvincedLiveController {
     this.updateMode()
     if (text) {
       if (role === 'user') this.inputTranscriptSegments.push(text)
+      if (role === 'assistant' && !buffer.backendSpeech) {
+        const priorUserSpeech = this.inputTranscriptSegments.join(' ').replace(/\s+/g, ' ').trim()
+        if (priorUserSpeech) call(() => this.options.onNativeExchange?.(priorUserSpeech, text))
+        this.inputTranscriptSegments.length = 0
+      }
       const message: LiveMessage = {
         message: text,
         source: role === 'user' ? 'user' : 'ai',
@@ -450,6 +488,7 @@ export class ConvincedLiveController {
     delete buffer.firstEventId
     delete buffer.startMs
     delete buffer.endMs
+    delete buffer.backendSpeech
   }
 
   private scheduleDelegation(generation: number): void {
@@ -508,7 +547,8 @@ export class ConvincedLiveController {
     try {
       if (!this.options.onClientDelegation) throw new Error('Live client delegation is not configured.')
       const result = await this.options.onClientDelegation(delegation)
-      if (generation !== this.generation || this.stateValue.status !== 'connected') return
+      if (generation !== this.generation || this.stateValue.status !== 'connected' ||
+          delegation.delegationId !== this.latestDelegationId) return
       const messageText = bounded(result.message, 'backend message', 64 * 1024)
       const message: LiveBackendMessage = {
         message: messageText,
@@ -518,7 +558,8 @@ export class ConvincedLiveController {
       call(() => this.options.onBackendMessage?.(message))
       this.sendBackendResult(result.speech ?? messageText, delegation.delegationId)
     } catch (cause) {
-      if (generation !== this.generation || this.stateValue.status !== 'connected') return
+      if (generation !== this.generation || this.stateValue.status !== 'connected' ||
+          delegation.delegationId !== this.latestDelegationId) return
       const error = cause instanceof Error ? cause : new Error(String(cause))
       this.events.emit('error', error)
       call(() => this.options.onError?.(error, delegation))
@@ -573,6 +614,9 @@ export class ConvincedLiveController {
     if (this.delegationTimer) clearTimeout(this.delegationTimer)
     this.delegationTimer = null
     this.pendingDelegations.length = 0
+    this.latestDelegationId = null
+    this.backendSpeechActive = false
+    this.backendSpeechUntil = 0
     this.lastInputTranscriptAt = 0
     this.inputTranscriptEndMs = undefined
     this.inputTranscriptSegments.length = 0

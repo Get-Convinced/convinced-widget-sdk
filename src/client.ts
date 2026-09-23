@@ -694,6 +694,12 @@ export class ConvincedClient {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
         options.onBackendMessage?.(message)
       },
+      onNativeExchange: (user, assistant) => {
+        if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
+        // 1,024 UTF-16 code units always fit the 5 KiB UTF-8 history limit.
+        this.appendMessage(createMessage('user', user.slice(0, 1024)), false)
+        this.appendMessage(createMessage('assistant', assistant.slice(0, 1024)), false)
+      },
       onClientDelegation: async ({ transcript }) => {
         const delegatedSessionId = boundSessionId
         if (!delegatedSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
@@ -810,6 +816,9 @@ export class ConvincedClient {
     const sessionId = this.requireSessionId()
     if (queuedSessionId && queuedSessionId !== sessionId) {
       throw new ConvincedSdkError('chat_session_changed', 'The queued message belongs to a previous session.')
+    }
+    for (const live of this.sessionLives) {
+      if (live.state.status === 'connected') live.flushNativeContext()
     }
     const history = options.history ?? this.stateValue.messages
       .slice(-MAX_WIDGET_CHAT_HISTORY_MESSAGES)
@@ -1146,7 +1155,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.4')
+    headers.set('x-convinced-sdk-version', '0.1.5')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 

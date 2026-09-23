@@ -209,7 +209,7 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveCapability).toBe('capability_owned')
     expect(liveWidgetToken).toBe('widget_token')
     expect(sessionBody.agentId).toBe('deployment_live')
-    expect(sdkVersion).toBe('0.1.4')
+    expect(sdkVersion).toBe('0.1.5')
     expect(Object.keys(liveBody).sort()).toEqual(['sdp'])
     expect(liveCreates).toBe(1)
     expect(chatCalls).toBe(3)
@@ -259,6 +259,196 @@ describe('GPT Live WebRTC controller', () => {
       type: 'session.commentary.append', delegation_id: 'delegation_late',
     }))
   })
+
+  test('passes Live-native clarification to Luna with the next delegated request', async () => {
+    installBrowser()
+    const chatBodies: JsonObject[] = []
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          chatBodies.push(JSON.parse(String(init.body)) as JsonObject)
+          return sse(chatBodies.length === 1 ? 'Earlier typed answer.' : 'I can show that workflow.')
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const deliveredMessages: string[] = []
+    client.on('message', message => deliveredMessages.push(message.text))
+    await client.sendMessage('Earlier typed question.')
+    const live = client.createLiveController()
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Help me understand this.' })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Which workflow should we look at?' })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Dispatch planning.' })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'clarification_1', target: 'client' } })
+
+    await waitFor(() => chatBodies.length === 2)
+    expect(chatBodies[1]?.history).toEqual([
+      { role: 'user', content: 'Earlier typed question.' },
+      { role: 'assistant', content: 'Earlier typed answer.' },
+      { role: 'user', content: 'Help me understand this.' },
+      { role: 'assistant', content: 'Which workflow should we look at?' },
+    ])
+    expect(deliveredMessages).not.toContain('Help me understand this.')
+    expect(deliveredMessages).not.toContain('Which workflow should we look at?')
+    expect(chatBodies[1]?.message).toBe('Dispatch planning.')
+    await live.end()
+  })
+
+  test('shares a Live-native exchange with typed chat and the session transcript', async () => {
+    installBrowser()
+    const chatBodies: JsonObject[] = []
+    let endBody: JsonObject = {}
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          chatBodies.push(JSON.parse(String(init.body)) as JsonObject)
+          return sse(`Answer ${chatBodies.length}.`)
+        }
+        if (path.endsWith('/session/end')) {
+          endBody = JSON.parse(String(init.body)) as JsonObject
+          return Response.json({ ok: true })
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    let sawNativeState = false
+    client.on('state', state => {
+      sawNativeState ||= state.messages.some(message => message.text === 'Which workflow should we look at?')
+    })
+    await client.sendMessage('Earlier typed question.')
+    const live = client.createLiveController()
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Help me understand this.' })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Which workflow should we look at?' })
+    await waitFor(() => sawNativeState)
+    await client.sendMessage('Dispatch planning, please.')
+    expect(chatBodies[1]?.history).toEqual([
+      { role: 'user', content: 'Earlier typed question.' },
+      { role: 'assistant', content: 'Answer 1.' },
+      { role: 'user', content: 'Help me understand this.' },
+      { role: 'assistant', content: 'Which workflow should we look at?' },
+    ])
+    expect(client.state.messages.map(message => ({ role: message.role, text: message.text }))).toEqual([
+      { role: 'user', text: 'Earlier typed question.' },
+      { role: 'assistant', text: 'Answer 1.' },
+      { role: 'user', text: 'Help me understand this.' },
+      { role: 'assistant', text: 'Which workflow should we look at?' },
+      { role: 'user', text: 'Dispatch planning, please.' },
+      { role: 'assistant', text: 'Answer 2.' },
+    ])
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What about timing?' })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'timing', target: 'client' } })
+    await waitFor(() => chatBodies.length === 3)
+    expect(chatBodies[2]?.history).toEqual([
+      { role: 'user', content: 'Earlier typed question.' },
+      { role: 'assistant', content: 'Answer 1.' },
+      { role: 'user', content: 'Help me understand this.' },
+      { role: 'assistant', content: 'Which workflow should we look at?' },
+      { role: 'user', content: 'Dispatch planning, please.' },
+      { role: 'assistant', content: 'Answer 2.' },
+    ])
+    expect(chatBodies[2]?.message).toBe('What about timing?')
+    await waitFor(() => client.state.messages.some(message => message.text === 'Answer 3.'))
+    await client.endSession()
+    expect(endBody.clientMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: 'Help me understand this.' }),
+      expect.objectContaining({ role: 'assistant', content: 'Which workflow should we look at?' }),
+    ]))
+  })
+
+  test('a newer delegation suppresses an older answer', async () => {
+    installBrowser()
+    const finish = new Map<string, (value: { message: string }) => void>()
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ delegationId }) => new Promise(resolve => { finish.set(delegationId, resolve) }),
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show the old slide.' })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'old', target: 'client' } })
+    await waitFor(() => finish.has('old'))
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Actually, show the new slide.' })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'new', target: 'client' } })
+    finish.get('old')!({ message: 'Old slide is visible.' })
+    await waitFor(() => finish.has('new'))
+    finish.get('new')!({ message: 'New slide is visible.' })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append' && event.delegation_id === 'new'))
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'old',
+    }))
+    await controller.end()
+  })
+
+  test('reports browser audio playback failure to the host', async () => {
+    installBrowser(async () => { throw new Error('Audio playback was blocked.') })
+    const errors: Error[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onError: error => errors.push(error),
+    })
+    await controller.start()
+    peer.ontrack?.({ streams: [{}] } as unknown as RTCTrackEvent)
+    await waitFor(() => errors.length > 0)
+    expect(errors[0]?.message).toBe('Audio playback was blocked.')
+    await controller.end()
+  })
+
+  test('does not record overlapping Luna speech as a native exchange', async () => {
+    installBrowser()
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => nativeExchanges.push({ user, assistant }),
+      onClientDelegation: () => ({ message: 'Backend answer.' }),
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show the result.' })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'first', target: 'client' } })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append' && event.delegation_id === 'first'))
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Here is', start_ms: 1, end_ms: 100 })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Actually,', start_ms: 200, end_ms: 300 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: ' the result.', start_ms: 1_500, end_ms: 1_600 })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: ' the new one.', start_ms: 1_700, end_ms: 1_900 })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'follow_up', target: 'client' } })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append' && event.delegation_id === 'follow_up'))
+    expect(nativeExchanges).toEqual([])
+    await controller.end()
+  })
 })
 
 function sse(text: string): Response {
@@ -267,7 +457,7 @@ function sse(text: string): Response {
   })
 }
 
-function installBrowser(): void {
+function installBrowser(play: () => Promise<void> = async () => undefined): void {
   track = { enabled: true, stopped: false, stop() { this.stopped = true } }
   peer = new FakePeer()
   const media = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream
@@ -281,7 +471,7 @@ function installBrowser(): void {
     configurable: true,
     value: { createElement: () => ({
       autoplay: false, srcObject: null, volume: 1,
-      play: async () => undefined, pause: () => undefined, remove: () => undefined,
+      play, pause: () => undefined, remove: () => undefined,
     }) },
   })
 }
@@ -292,9 +482,10 @@ function restore(name: string, descriptor: PropertyDescriptor | undefined): void
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
     if (predicate()) return
-    await Bun.sleep(2)
+    await Bun.sleep(10)
   }
   throw new Error('Timed out waiting for condition.')
 }
