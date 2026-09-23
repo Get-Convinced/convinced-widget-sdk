@@ -1155,7 +1155,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.5')
+    headers.set('x-convinced-sdk-version', '0.1.6')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 
