@@ -215,9 +215,10 @@ describe('GPT Live WebRTC controller', () => {
       },
     })
     await controller.start()
-    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Explain the proof' })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Explain the proof', end_ms: 1000 })
     peer.channel.emit({
       type: 'session.delegation.created',
+      offset_ms: 1000,
       delegation: { id: 'delegation_late', target: 'client' },
     })
     await waitFor(() => delegated)

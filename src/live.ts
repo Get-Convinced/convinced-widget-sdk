@@ -617,14 +617,39 @@ function bounded(value: string, name: string, maxBytes: number): string {
 }
 
 function liveCommentary(value: string): string {
-  const faithful = value
-    .replace(/\[(?:SLIDE|VIDEO):[^\]]+\]/gi, '')
+  const faithful = stripMediaDirectives(value)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   if (!faithful) throw new Error('backend speech result must not be empty.')
   return boundedWithMiddleOmission(faithful, MAX_LIVE_CONTEXT_BYTES)
+}
+
+function stripMediaDirectives(value: string): string {
+  let result = ''
+  let cursor = 0
+  while (cursor < value.length) {
+    const opening = value.indexOf('[', cursor)
+    if (opening < 0) return result + value.slice(cursor)
+    result += value.slice(cursor, opening)
+    const prefix = value.slice(opening + 1, opening + 7).toUpperCase()
+    const isSlide = prefix === 'SLIDE:'
+    const isVideo = prefix === 'VIDEO:'
+    if (!isSlide && !isVideo) {
+      result += '['
+      cursor = opening + 1
+      continue
+    }
+    const closing = value.indexOf(']', opening + 7)
+    if (closing < 0 || closing === opening + 7) {
+      result += '['
+      cursor = opening + 1
+      continue
+    }
+    cursor = closing + 1
+  }
+  return result
 }
 
 function boundedWithMiddleOmission(value: string, maxBytes: number): string {
