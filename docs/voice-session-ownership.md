@@ -1,53 +1,25 @@
-# Headless voice belongs to the Convinced session
+# Speech and session ownership
 
-SDK version: `0.1.1-webmcp.3`. Use it with the Convinced hosted transcript-reconciliation backend, deployed on 21 September 2026. Self-hosted installations need the companion backend change.
-
-Create voice through the client which owns the Convinced session:
+SDK 0.1.2 keeps one Convinced session and one Luna conversation across text, speech, media, knowledge, and host tools. `gpt-live-1` supplies optional full-duplex audio; it does not own a second assistant brain.
 
 ```ts
-import { ConvincedClient } from '@convinced/widget-sdk'
-
-const client = new ConvincedClient({ orgSlug: 'your-org' })
-await client.initialize({ loadMedia: false })
-const voice = client.createVoiceController()
-client.on('message', message => renderMessage(message))
-await voice.start()
-
-// On the visitor's explicit session close:
-await client.endSession()
+const client = new ConvincedClient({ orgSlug, agentId, tools })
+await client.initialize()
+const live = client.createLiveController()
+await live.start({ startMuted: false })
 ```
 
-`renderMessage` is your UI callback. The client receives normalized `user` and `assistant` messages from both text and voice. `voice.sendUserMessage()` also records typed turns, since the provider does not echo those through its transcript callback. It records provider conversation IDs internally, carries the Convinced session ID into the voice transport, and retains turns across reconnects. `endSession()` stops its voice controllers, includes any final captured turns, and submits the transcript without provider-specific arguments from the application.
+When a visitor speaks, Live emits a client delegation. The SDK accumulates the input transcript, including segments separated by a pause, and sends one turn through `client.sendMessage()`. Luna uses the same history, prompt, knowledge, and tools as typed chat. The canonical Luna answer appears through the normal client message/content events. The Live connection receives a bounded, faithful copy as commentary and speaks a natural rendering.
 
-`voice.end()` stops voice while leaving the Convinced session available for text or reconnection. After a successful `client.endSession()`, call `client.renewSession()` before starting a new conversation. Wait for any active text request before ending the session. A failed HTTP save rejects; retry `client.endSession()` before discarding the client. `destroy()` releases resources; it is not a replacement for awaiting session persistence. Browser termination can still interrupt an HTTP save.
-
-For WebMCP, supply the bridge registry and its two fixed bindings. The following fragment assumes your page has a supported `modelContext` and an explicit `permittedPageTools` set:
+Typed messages always use `client.sendMessage()`. If Live is connected, the completed Luna answer is also sent to Live for speech. Ending Live stops microphone/audio transport and leaves the chat session usable:
 
 ```ts
-import { ClientToolRegistry, createWebMcpBridge, WEBMCP_VOICE_BINDINGS } from '@convinced/widget-sdk'
-
-const bridge = createWebMcpBridge({
-  modelContext, // the available same-origin WebMCP context
-  origin: window.location.origin,
-  authorize: tool => permittedPageTools.has(tool.name),
-})
-const voice = client.createVoiceController({
-  tools: new ClientToolRegistry(bridge.tools),
-  exactClientTools: WEBMCP_VOICE_BINDINGS,
-  genericClientTool: false,
-})
-await voice.start()
-// Before removing this page:
-await client.endSession()
-bridge.dispose()
+await live.end()
+await client.sendMessage('Continue in text')
 ```
 
-Convinced must configure the session's hosted agent for those bindings. The SDK version alone does not configure its tools or change which agent receives traffic. A server-supplied `descriptorFactory` remains available for signed/private descriptors and refreshes on every start. The factory receives the Convinced session ID; callers never need a provider API key.
+Create one controller per client and reuse it. The SDK rejects a second controller so remounts cannot accidentally create duplicate microphones, billing, or speech.
 
-The standalone `new ConvincedVoiceController(...)` remains a low-level adapter for existing integrations. It is not automatically attached to a `ConvincedClient`. Migrate headless integrations to `client.createVoiceController(...)` and remove manual provider-ID callbacks and transcript buffering. UI-only `onMessage` callbacks can remain. Subscribe to `client.on('message', ...)` to render the combined text/voice stream. Your renderer still records which slides it actually shows and can pass `slidesViewed` to `endSession()`; the session cannot infer that presentation state.
+Call `client.endSession()` only when the entire experience ends. The backend already recorded the opaque Live session ID when it created the transport; the browser does not submit provider IDs. `endSession()` can include the exact slide filenames your renderer showed because presentation state belongs to the host.
 
-Backend companion change: session finalization merges snapshots with stored text; retries do not skip the whole batch. Voice turns carry an internal source identifier, so provider imports can reconcile the same conversation while preserving repeated words and reconnects. Summaries and products use the merged stored history. Each persisted turn is still limited to 5,000 characters; snapshots exceeding 2,000 turns fail explicitly. This is not an unlimited archive or a guarantee against browser termination, provider omissions, or provider delivery failures.
-
-Summary generation is separate from transcript persistence. Model failures or input above the 120,000-character summary budget leave the transcript stored and its summary pending. The budget counts the formatted transcript; it does not truncate stored turns. No background summary retry worker is included. Convinced can retry finalization or provider sync after a transient failure; a conversation above the budget needs a separate summarization strategy. A successful `endSession()` is cached by the SDK and does not promise a summary field or trigger further server work on repeat calls.
-
-Convinced must configure the chosen agent for the page's exact bindings. The SDK cannot change those settings. Production rejects unsigned provider webhooks; operators must provision signing and delivery separately. Immediate browser capture does not rely on a webhook arriving before finalization. This release does not add the hosted private-voice credential endpoint or change provider retry settings.
+The browser never receives an OpenAI key. Session creation returns an opaque signed capability. The SDK sends it on Live creation, context writes, and session end; the backend checks organization/session binding and expiry.

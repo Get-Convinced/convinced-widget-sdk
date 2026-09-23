@@ -12,7 +12,7 @@ Security fixes target the latest published minor release. Upgrade to the latest 
 
 ## Browser security boundary
 
-The SDK is intentionally a browser adapter. It must never receive long-lived ElevenLabs API keys, PostHog personal API keys, Convinced partner keys, privileged MCP credentials, database credentials, or server session secrets. Use short-lived voice credentials, opaque signed Convinced session capabilities, explicit tool allowlists, and visitor consent.
+The SDK is intentionally a browser adapter. It must never receive OpenAI API keys, PostHog personal API keys, Convinced partner keys, privileged MCP credentials, database credentials, or server session secrets. Use opaque signed Convinced session capabilities, explicit tool allowlists, and visitor consent.
 
 DOM, custom, and MCP-backed tools are denied unless they are registered and authorized. Treat page content, campaign context, transcripts, and tool results as untrusted data. Review the security section in the README before enabling navigation, mutation, page context, identity, analytics, or replay.
 

@@ -518,7 +518,7 @@ describe('ConvincedClient transport', () => {
     })
   })
 
-  test('syncs identity, behavior, page changes, and ElevenLabs ids through lifecycle APIs', async () => {
+  test('syncs identity, behavior, page changes, and transcript through lifecycle APIs', async () => {
     const contextBodies: JsonObject[] = []
     let endBody: JsonObject | undefined
     const writeCapabilities: string[] = []
@@ -576,8 +576,6 @@ describe('ConvincedClient transport', () => {
       company: 'Acme',
       context: 'Asked for a warehouse demo.',
     })
-    client.linkElevenLabsConversation('conv_first')
-    client.linkElevenLabsConversation('conv_second')
     const firstEnd = client.endSession({
       clientMessages: [
         { role: 'user', content: 'Show the ROI proof.' },
@@ -611,8 +609,6 @@ describe('ConvincedClient transport', () => {
     ])
     expect(endBody).toMatchObject({
       sessionId: 'session_lifecycle',
-      elevenLabsConversationId: 'conv_second',
-      elevenLabsConversationIds: ['conv_first', 'conv_second'],
       clientMessages: [
         { role: 'user', content: 'Show the ROI proof.' },
         { role: 'assistant', content: 'Here is the ROI slide.' },

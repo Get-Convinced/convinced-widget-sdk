@@ -5,15 +5,10 @@ import {
 } from './content.js'
 import { normalizeBusinessEmail } from './business-email.js'
 import type { ConvincedClient } from './client.js'
-import { buildManagedVoiceStartContext } from './voice-context.js'
+import { buildManagedLiveStartContext } from './voice-context.js'
 import { HOST_TOOL_PROTOCOL_VERSION } from './types.js'
+import type { ConvincedLiveController, ConvincedLiveState } from './live.js'
 import type {
-  ConvincedVoiceController,
-  ConvincedVoiceState,
-  ElevenLabsVoiceMessage,
-} from './voice.js'
-import type {
-  ChatHistoryMessage,
   ChatMessage,
   ClientTool,
   ConvincedClientState,
@@ -76,7 +71,7 @@ export interface WidgetTheme {
 
 export interface MountConvincedWidgetOptions {
   client: ConvincedClient
-  voice?: ConvincedVoiceController
+  voice?: ConvincedLiveController
   /** managed-v2 honors deployment voice modes, campaign pills, and first-message config. */
   preset?: WidgetPreset
   target?: Element | string
@@ -154,7 +149,6 @@ export function mountConvincedWidget(
   const voiceStatus = requiredElement<HTMLElement>(shadow, '[data-voice-status]')
   const voiceStartButton = requiredElement<HTMLButtonElement>(shadow, '[data-voice-start]')
   const voiceMuteButton = requiredElement<HTMLButtonElement>(shadow, '[data-voice-mute]')
-  const voicePttButton = requiredElement<HTMLButtonElement>(shadow, '[data-voice-ptt]')
   const welcomeCard = requiredElement<HTMLElement>(shadow, '[data-welcome-card]')
   const engagementOffers = requiredElement<HTMLElement>(shadow, '[data-engagement-offers]')
   const meetingCta = requiredElement<HTMLAnchorElement>(shadow, '[data-meeting-cta]')
@@ -194,14 +188,10 @@ export function mountConvincedWidget(
   let voiceVisitorUtterances = 0
   let voiceIdentityGateMode: 'none' | 'soft' | 'hard' = 'none'
   let managedVoiceToolsReady = false
-  let voicePttHeld = false
-  let voicePttStartPromise: Promise<WidgetVoiceStartResult> | null = null
   const managedVoiceToolUnregisters: Array<() => void> = []
-  const managedToolSuffix = Math.random().toString(36).slice(2, 10)
   const voiceIdentityValues: Partial<Record<IdentityFieldName, string>> = {}
   const visitorTypedIdentityFields = new Set<IdentityFieldName>()
   let pendingIdentityResource: { resourceType?: string; resourceLabel?: string } | null = null
-  const voiceTranscript: Array<ElevenLabsVoiceMessage & { receivedAt: number }> = []
   const unsubscribe: Array<() => void> = []
   let initializationPromise: Promise<unknown> | null = null
   let managedDesiredSessionActive = true
@@ -225,7 +215,7 @@ export function mountConvincedWidget(
     expandButton.textContent = isExpanded ? '↙' : '↗'
     if (isOpen) queueMicrotask(() => {
       if (activeMode === 'voice' && !voicePanel.hidden) {
-        if (!voicePttButton.hidden) voicePttButton.focus()
+        if (!voiceMuteButton.hidden) voiceMuteButton.focus()
         else voiceStartButton.focus()
       }
       else composer.focus()
@@ -359,8 +349,7 @@ export function mountConvincedWidget(
 
     voicePanel.hidden = !policy.enabled || activeMode !== 'voice'
     const voiceConnected = currentVoiceState?.status === 'connected'
-    const voiceTextFallback = activeMode === 'voice' && voiceConnected && currentVoiceState?.textOnly === true
-    chatForm.hidden = voiceTextFallback ? false : activeMode !== 'chat' || policy.voiceOnly
+    chatForm.hidden = activeMode !== 'chat' || policy.voiceOnly
     const voiceTransitioning = currentVoiceState?.status === 'connecting' || currentVoiceState?.status === 'disconnecting'
     voiceStatus.textContent = !policy.smartGateReady
       ? `Continue in chat to unlock voice (${policy.assistantMessages}/${policy.warmupExchanges}).`
@@ -377,30 +366,23 @@ export function mountConvincedWidget(
             ? 'Ending…'
             : config?.voiceCtaText ?? 'Start voice'
     voiceStartButton.disabled = voiceTransitioning || !policy.smartGateReady
-    voiceStartButton.hidden = policy.voiceLed && !voiceConnected
-    voiceMuteButton.hidden = !voiceConnected || policy.voiceLed
+    voiceStartButton.hidden = false
+    voiceMuteButton.hidden = !voiceConnected
     voiceMuteButton.textContent = currentVoiceState?.muted ? 'Unmute' : 'Mute'
     voiceMuteButton.setAttribute('aria-pressed', String(currentVoiceState?.muted === true))
-    voicePttButton.hidden = currentVoiceState?.textOnly === true || (policy.voiceLed
-      ? !policy.smartGateReady || !policy.identityReady
-      : !voiceConnected)
-    voicePttButton.textContent = voiceConnected ? 'Hold to talk' : 'Hold to start talking'
-    voicePttButton.setAttribute('aria-pressed', String(currentVoiceState?.pushToTalkActive === true))
 
     renderMessages(
       messages,
       state.messages,
-      voiceTranscript,
       voicePresentation,
       preset === 'managed-v2' ? managedGreeting(state) : null,
     )
     renderSuggestions(
       suggestions,
       state,
-      voiceTranscript.length,
       (question) => void submitPrompt(question),
     )
-    renderWelcomeCard(welcomeCard, state, voiceTranscript.length, {
+    renderWelcomeCard(welcomeCard, state, {
       preset,
       dismissed: welcomeDismissed,
       onContinue: () => {
@@ -410,7 +392,7 @@ export function mountConvincedWidget(
         })
         render(options.client.state)
         if (activeMode === 'voice' && options.voice && policy.enabled) {
-          if (policy.voiceLed) voicePttButton.focus()
+          if (policy.voiceLed) voiceStartButton.focus()
           else {
             void startVoice().catch((error: unknown) => {
               widgetError = error instanceof Error ? error : new Error(String(error))
@@ -422,7 +404,7 @@ export function mountConvincedWidget(
         }
       },
     })
-    renderEngagementOffers(engagementOffers, state, voiceTranscript, {
+    renderEngagementOffers(engagementOffers, state, {
       preset,
       meetingUrl: safeMeetingUrl(config?.meetingCtaUrl),
       onEmailCapture: (label) => {
@@ -772,10 +754,7 @@ export function mountConvincedWidget(
     sendButton.disabled = true
     try {
       if (preset === 'managed-v2') await ensureManagedSessionActive()
-      const history = preset === 'managed-v2' && voiceTranscript.length > 0
-        ? mergedChannelHistory(options.client.state.messages, voiceTranscript)
-        : undefined
-      await options.client.sendMessage(message, history ? { history } : {})
+      await options.client.sendMessage(message)
     } catch {
       // The client emits a typed error event and state update for rendering.
     }
@@ -810,8 +789,6 @@ export function mountConvincedWidget(
       })
     }
   }
-
-  const managedExactClientTools: Record<string, string> = {}
 
   const advanceVoiceIdentityGate = () => {
     if (options.client.state.identity?.email) return
@@ -849,8 +826,9 @@ export function mountConvincedWidget(
       handler: ClientTool['handler'],
       consent: ToolConsent = 'none',
     ) => {
-      const registryName = `client_managed_${exactName}_${managedToolSuffix}`
-      managedVoiceToolUnregisters.push(options.voice!.registerRuntimeTool({
+      const registryName = `client_${exactName}`
+      if (options.client.tools.has(registryName)) return
+      managedVoiceToolUnregisters.push(options.client.registerTool({
         version: HOST_TOOL_PROTOCOL_VERSION,
         name: registryName,
         description,
@@ -861,7 +839,6 @@ export function mountConvincedWidget(
         timeoutMs: 10_000,
         handler,
       }))
-      managedExactClientTools[exactName] = registryName
     }
 
     try {
@@ -1048,13 +1025,12 @@ export function mountConvincedWidget(
       managedVoiceToolsReady = true
     } catch (error) {
       for (const unregister of managedVoiceToolUnregisters.splice(0)) unregister()
-      for (const key of Object.keys(managedExactClientTools)) delete managedExactClientTools[key]
       throw error
     }
   }
 
   const startVoice = async () => {
-    if (!options.voice) throw new Error('No ElevenLabs voice controller was supplied.')
+    if (!options.voice) throw new Error('No live controller was supplied.')
     if (preset === 'managed-v2') await ensureManagedSessionActive()
     else if (!options.client.state.session) await options.client.initialize()
     if (options.voice.state.status === 'connected') return 'already_connected' as const
@@ -1081,16 +1057,12 @@ export function mountConvincedWidget(
     const currentPageTitle = typeof document !== 'undefined' ? document.title : undefined
     const currentReferrer = typeof document !== 'undefined' ? document.referrer : undefined
     const resolvedFirstMessage = managedGreeting(options.client.state)
-    const voiceContext = buildManagedVoiceStartContext(options.client.state, {
+    const voiceContext = buildManagedLiveStartContext(options.client.state, {
       ...(currentPageUrl ? { pageUrl: currentPageUrl } : {}),
       ...(currentPageTitle ? { pageTitle: currentPageTitle } : {}),
       ...(currentReferrer ? { referrer: currentReferrer } : {}),
-      voiceTranscript,
       ...(resolvedFirstMessage ? { firstMessage: resolvedFirstMessage } : {}),
-      exactClientTools: managedExactClientTools,
     })
-    if (initialPolicy.voiceLed) voiceContext.startMuted = true
-    if (preset === 'managed-v2') voiceContext.fallbackToTextOnly = true
     const connectedState = await options.voice.start(voiceContext)
     if (connectedState.status !== 'connected') {
       render(options.client.state)
@@ -1109,16 +1081,12 @@ export function mountConvincedWidget(
         voiceUpgradeMarked = false
       })
     }
-    const conversationId = options.voice.conversationId
-    if (conversationId) options.client.linkElevenLabsConversation(conversationId)
     render(options.client.state)
     return 'started' as const
   }
 
   const endVoice = async () => {
     if (!options.voice) return
-    const conversationId = options.voice.conversationId
-    if (conversationId) options.client.linkElevenLabsConversation(conversationId)
     await options.voice.end()
     render(options.client.state)
   }
@@ -1141,7 +1109,6 @@ export function mountConvincedWidget(
     voiceIdentityGateMode = 'none'
     identityDecision = null
     profileGateLocked = false
-    voiceTranscript.length = 0
     visitorTypedIdentityFields.clear()
     pendingIdentityResource = null
     for (const key of Object.keys(voiceIdentityValues) as IdentityFieldName[]) {
@@ -1230,10 +1197,6 @@ export function mountConvincedWidget(
           ) {
             try {
               await options.client.endSession({
-                clientMessages: mergedChannelHistory(
-                  options.client.state.messages,
-                  voiceTranscript,
-                ),
                 slidesViewed: shownSlideFilenames(
                   options.client.state.messages,
                   managedSlidesViewed,
@@ -1285,18 +1248,7 @@ export function mountConvincedWidget(
   const submitPrompt = async (value: string) => {
     const message = value.trim()
     if (!message) return
-    if (activeMode !== 'voice' || !options.voice || !resolveVoicePolicy(options.client.state).enabled) {
-      await submitMessage(message)
-      return
-    }
-    if (options.voice.state.status !== 'connected') await startVoice()
-    if (options.voice.state.status === 'connected') {
-      composer.value = ''
-      sendButton.disabled = true
-      options.voice.sendUserMessage(message)
-      options.voice.sendUserActivity()
-      render(options.client.state)
-    }
+    await submitMessage(message)
   }
 
   launcher.addEventListener('click', () => {
@@ -1340,94 +1292,6 @@ export function mountConvincedWidget(
       widgetError = error instanceof Error ? error : new Error(String(error))
     }
     render(options.client.state)
-  })
-  const beginPushToTalk = (event: Event) => {
-    event.preventDefault()
-    if (!options.voice) return
-    const pointerEvent = event as PointerEvent
-    if (typeof pointerEvent.pointerId === 'number' && 'setPointerCapture' in voicePttButton) {
-      try {
-        voicePttButton.setPointerCapture(pointerEvent.pointerId)
-      } catch {
-        // Synthetic and keyboard events do not own pointer capture.
-      }
-    }
-    voicePttHeld = true
-    if (options.voice.state.status === 'connected') {
-      if (options.voice.state.textOnly) {
-        composer.focus()
-        return
-      }
-      if (options.voice.state.pushToTalkActive) return
-      try {
-        options.voice.startPushToTalk()
-      } catch (error) {
-        widgetError = error instanceof Error ? error : new Error(String(error))
-        render(options.client.state)
-      }
-      return
-    }
-    const policy = resolveVoicePolicy(options.client.state)
-    if (!policy.voiceLed || !policy.smartGateReady || !policy.identityReady) return
-    const operation = voicePttStartPromise ?? startVoice()
-    if (!voicePttStartPromise) {
-      voicePttStartPromise = operation
-      void operation.finally(() => {
-        if (voicePttStartPromise === operation) voicePttStartPromise = null
-      }).catch(() => undefined)
-    }
-    void operation.then(() => {
-      if (!options.voice || options.voice.state.status !== 'connected') return
-      if (options.voice.state.textOnly) {
-        composer.focus()
-        return
-      }
-      if (!voicePttHeld) {
-        options.voice.setMuted(true)
-        return
-      }
-      if (!options.voice.state.pushToTalkActive) options.voice.startPushToTalk()
-    }).catch((error: unknown) => {
-      widgetError = error instanceof Error ? error : new Error(String(error))
-      render(options.client.state)
-    })
-  }
-  const releasePushToTalk = () => {
-    voicePttHeld = false
-    if (!options.voice || options.voice.state.status !== 'connected') return
-    try {
-      if (options.voice.state.pushToTalkActive) options.voice.stopPushToTalk()
-      else options.voice.setMuted(true)
-    } catch (error) {
-      if (voicePttStartPromise) return
-      widgetError = error instanceof Error ? error : new Error(String(error))
-      render(options.client.state)
-    }
-  }
-  const finishPushToTalk = (event: Event) => {
-    event.preventDefault()
-    releasePushToTalk()
-  }
-  const releasePushToTalkOnVisibility = () => {
-    if (document.visibilityState === 'hidden') releasePushToTalk()
-  }
-  voicePttButton.addEventListener('pointerdown', beginPushToTalk)
-  voicePttButton.addEventListener('pointerup', finishPushToTalk)
-  voicePttButton.addEventListener('pointercancel', finishPushToTalk)
-  voicePttButton.addEventListener('pointerleave', finishPushToTalk)
-  voicePttButton.addEventListener('lostpointercapture', finishPushToTalk)
-  voicePttButton.addEventListener('blur', releasePushToTalk)
-  document.addEventListener('visibilitychange', releasePushToTalkOnVisibility)
-  if (typeof window !== 'undefined') window.addEventListener('blur', releasePushToTalk)
-  voicePttButton.addEventListener('keydown', (event) => {
-    const keyboardEvent = event as KeyboardEvent
-    if ((keyboardEvent.key === ' ' || keyboardEvent.key === 'Enter') && !keyboardEvent.repeat) {
-      beginPushToTalk(event)
-    }
-  })
-  voicePttButton.addEventListener('keyup', (event) => {
-    const keyboardEvent = event as KeyboardEvent
-    if (keyboardEvent.key === ' ' || keyboardEvent.key === 'Enter') finishPushToTalk(event)
   })
   chatForm.addEventListener('submit', (event) => {
     event.preventDefault()
@@ -1514,19 +1378,12 @@ export function mountConvincedWidget(
   if (options.voice) {
     unsubscribe.push(
       options.voice.on('state', (voiceState) => {
-        if (voiceState.conversationId) {
-          try {
-            options.client.linkElevenLabsConversation(voiceState.conversationId)
-          } catch {
-            // The voice controller already validates IDs; keep rendering on host misuse.
-          }
-        }
         render(options.client.state)
       }),
       options.voice.on('message', (message) => {
-        if (message.role === 'user' && message.message.trim()) advanceVoiceIdentityGate()
-        voiceTranscript.push({ ...message, receivedAt: Date.now() })
-        if (voiceTranscript.length > 200) voiceTranscript.splice(0, voiceTranscript.length - 200)
+        if (message.role === 'user' && message.message.trim()) {
+          advanceVoiceIdentityGate()
+        }
         render(options.client.state)
       }),
       options.voice.on('error', (error) => {
@@ -1579,10 +1436,6 @@ export function mountConvincedWidget(
       return (async () => {
         if (options.voice) await endVoice()
         await options.client.endSession({
-          clientMessages: mergedChannelHistory(
-            options.client.state.messages,
-            voiceTranscript,
-          ),
           slidesViewed: shownSlideFilenames(
             options.client.state.messages,
             managedSlidesViewed,
@@ -1625,13 +1478,8 @@ export function mountConvincedWidget(
               ].filter(Boolean).join('\n'),
               'widget-channel-mode',
             )
-            if (options.voice.state.textOnly) {
-              options.voice.setVolume(0)
-              options.voice.setMuted(true)
-            } else {
-              options.voice.setVolume(1)
-              options.voice.setMuted(false)
-            }
+            options.voice.setVolume(1)
+            options.voice.setMuted(false)
             voiceSuspendedByMode = false
           } catch (error) {
             widgetError = error instanceof Error ? error : new Error(String(error))
@@ -1672,18 +1520,8 @@ export function mountConvincedWidget(
       for (const stop of unsubscribe) stop()
       for (const unregister of managedVoiceToolUnregisters.splice(0)) unregister()
       shadow.removeEventListener('keydown', onPanelKeydown)
-      document.removeEventListener('visibilitychange', releasePushToTalkOnVisibility)
-      if (typeof window !== 'undefined') window.removeEventListener('blur', releasePushToTalk)
       host.remove()
       if (preset === 'managed-v2') {
-        const conversationId = options.voice?.conversationId
-        if (options.voice && conversationId) {
-          try {
-            options.client.linkElevenLabsConversation(conversationId)
-          } catch {
-            // Keep teardown best-effort.
-          }
-        }
         const finalize = finalizeManagedSession().catch(() => undefined)
         if (options.destroyClientOnUnmount) {
           void finalize.finally(() => options.client.destroy())
@@ -1708,19 +1546,14 @@ export function mountConvincedWidget(
 function renderMessages(
   container: HTMLElement,
   messages: ChatMessage[],
-  voiceTranscript: ElevenLabsVoiceMessage[] = [],
   voicePresentation: MessageContentPart[] = [],
   greeting: string | null = null,
 ): void {
   container.replaceChildren()
   const normalizedGreeting = greeting?.trim() ?? ''
-  const greetingAlreadyPresent = normalizedGreeting && [
-    ...messages.filter((message) => message.role === 'assistant').map((message) => message.text),
-    ...voiceTranscript
-      .filter((message) => message.role === 'agent')
-      .map((message) => cleanVoiceDisplayText(message.message))
-      .filter(Boolean),
-  ].some((message) => message.trim() === normalizedGreeting)
+  const greetingAlreadyPresent = normalizedGreeting && messages
+    .filter((message) => message.role === 'assistant')
+    .some((message) => message.text.trim() === normalizedGreeting)
   if (normalizedGreeting && !greetingAlreadyPresent) {
     const article = textMessageArticle('assistant', normalizedGreeting, 'managed')
     article.dataset.greeting = 'true'
@@ -1740,17 +1573,6 @@ function renderMessages(
       article.appendChild(pending)
     }
     container.appendChild(article)
-  }
-  for (const message of voiceTranscript) {
-    const displayText = message.role === 'agent'
-      ? cleanVoiceDisplayText(message.message)
-      : message.message.trim()
-    if (!displayText) continue
-    container.appendChild(textMessageArticle(
-      message.role === 'agent' ? 'assistant' : 'user',
-      displayText,
-      'voice',
-    ))
   }
   if (voicePresentation.length > 0) {
     const article = document.createElement('article')
@@ -1775,14 +1597,6 @@ function textMessageArticle(
   paragraph.textContent = text
   article.appendChild(paragraph)
   return article
-}
-
-function cleanVoiceDisplayText(value: string): string {
-  const withoutDeliveryTags = value.replace(
-    /^(?:\s*\[(?:happy|sad|excited|calm|curious|serious|friendly|warm|empathetic|laughs?|chuckles?|sighs?|whispers?|clears throat)\]\s*)+/i,
-    '',
-  )
-  return withoutDeliveryTags.trim()
 }
 
 function renderContentPart(part: MessageContentPart): Node {
@@ -1839,11 +1653,10 @@ function renderContentPart(part: MessageContentPart): Node {
 function renderSuggestions(
   container: HTMLElement,
   state: ConvincedClientState,
-  voiceMessageCount: number,
   send: (question: string) => void,
 ): void {
   container.replaceChildren()
-  if (state.messages.length > 0 || voiceMessageCount > 0) {
+  if (state.messages.length > 0) {
     container.hidden = true
     return
   }
@@ -1881,7 +1694,6 @@ interface WelcomeCardRenderOptions {
 function renderWelcomeCard(
   container: HTMLElement,
   state: ConvincedClientState,
-  voiceMessageCount: number,
   options: WelcomeCardRenderOptions,
 ): void {
   container.replaceChildren()
@@ -1891,7 +1703,6 @@ function renderWelcomeCard(
     options.preset !== 'managed-v2' ||
     options.dismissed ||
     state.messages.length > 0 ||
-    voiceMessageCount > 0 ||
     !card
   ) {
     container.hidden = true
@@ -1995,7 +1806,6 @@ interface EngagementOfferRenderOptions {
 function renderEngagementOffers(
   container: HTMLElement,
   state: ConvincedClientState,
-  voiceTranscript: ElevenLabsVoiceMessage[],
   options: EngagementOfferRenderOptions,
 ): void {
   container.replaceChildren()
@@ -2008,8 +1818,6 @@ function renderEngagementOffers(
 
   const completedAssistantTurns = state.messages.filter(
     (message) => message.role === 'assistant' && message.text.trim().length > 0,
-  ).length + voiceTranscript.filter(
-    (message) => message.role === 'agent' && message.message.trim().length > 0,
   ).length
 
   const email = triggers.emailCapture
@@ -2253,42 +2061,6 @@ async function trackUiEvent(
   }
 }
 
-function mergedChannelHistory(
-  chatMessages: ChatMessage[],
-  voiceMessages: Array<ElevenLabsVoiceMessage & { receivedAt: number }>,
-): ChatHistoryMessage[] {
-  const entries = [
-    ...chatMessages
-      .filter((message) => message.text.trim())
-      .map((message, index) => ({
-        role: message.role,
-        content: message.text.trim(),
-        at: message.createdAt,
-        order: index,
-      })),
-    ...voiceMessages
-      .filter((message) => message.message.trim())
-      .map((message, index) => ({
-        role: message.role === 'agent' ? 'assistant' as const : 'user' as const,
-        content: message.message.trim(),
-        at: message.receivedAt,
-        order: chatMessages.length + index,
-      })),
-  ].sort((left, right) => left.at - right.at || left.order - right.order)
-  const seen = new Set<string>()
-  const history: ChatHistoryMessage[] = []
-  for (const entry of entries) {
-    const key = `${entry.role}\u0000${entry.content}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    history.push({
-      role: entry.role,
-      content: truncateUtf8Bytes(entry.content, 5 * 1024),
-    })
-  }
-  return history.slice(-20)
-}
-
 function shownSlideFilenames(
   chatMessages: ChatMessage[],
   managedSlidesViewed: ReadonlySet<string>,
@@ -2433,14 +2205,13 @@ function removeLegacyManagedVisitorStorage(orgSlug: string): void {
   }
 }
 
-function voiceStatusLabel(state: ConvincedVoiceState | null): string {
+function voiceStatusLabel(state: ConvincedLiveState | null): string {
   if (!state) return ''
   if (state.status === 'connecting') return 'Connecting voice…'
   if (state.status === 'disconnecting') return 'Ending voice…'
   if (state.status === 'disconnected') return 'Voice ended'
   if (state.status === 'error') return state.error?.message ?? 'Voice unavailable'
   if (state.status !== 'connected') return ''
-  if (state.textOnly) return 'Audio unavailable · text-only conversation ready'
   if (state.muted) return 'Muted'
   if (state.mode === 'speaking') return 'Speaking'
   if (state.mode === 'listening') return 'Listening'
@@ -2740,9 +2511,7 @@ function template(): string {
       .voice-copy small { margin-top: 3px; color: var(--convinced-muted); line-height: 1.35; }
       .voice-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
       .voice-actions button { min-height: 44px; border: 1px solid var(--convinced-border); border-radius: 14px; padding: 9px 14px; color: var(--convinced-text); background: var(--convinced-surface); font-size: 12px; font-weight: 720; }
-      .voice-actions .voice-start,
-      .voice-actions .voice-ptt { border-color: transparent; color: var(--convinced-on-primary); background: var(--convinced-primary); box-shadow: 0 8px 22px color-mix(in srgb, var(--convinced-primary) 20%, transparent); }
-      .voice-actions .voice-ptt[aria-pressed="true"] { color: var(--convinced-on-primary); background: var(--convinced-primary); }
+      .voice-actions .voice-start { border-color: transparent; color: var(--convinced-on-primary); background: var(--convinced-primary); box-shadow: 0 8px 22px color-mix(in srgb, var(--convinced-primary) 20%, transparent); }
       .welcome-card { margin: 12px 14px 0; border: 1px solid color-mix(in srgb, var(--convinced-primary) 28%, var(--convinced-border)); border-radius: 17px; padding: 15px; color: var(--convinced-text); background: var(--convinced-welcome-background, color-mix(in srgb, var(--convinced-surface) 91%, var(--convinced-primary))); box-shadow: 0 12px 28px color-mix(in srgb, var(--convinced-primary) 8%, transparent); }
       .welcome-tagline { display: block; font-size: 15px; line-height: 1.35; letter-spacing: -.01em; }
       .welcome-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 7px; margin-top: 12px; }
@@ -2846,7 +2615,6 @@ function template(): string {
         <div class="voice-actions">
           <button class="voice-start" type="button" data-voice-start>Start voice</button>
           <button type="button" data-voice-mute aria-pressed="false" hidden>Mute</button>
-          <button class="voice-ptt" type="button" data-voice-ptt aria-pressed="false" hidden>Hold to talk</button>
         </div>
       </section>
       <section class="welcome-card" data-welcome-card aria-label="Welcome" hidden></section>

@@ -23,9 +23,6 @@ const [, standaloneBuild] = await Promise.all([
     ...shared,
     format: 'esm',
     outfile: 'dist/index.js',
-    // Keep the optional voice transport as a runtime dependency for module
-    // consumers. The standalone IIFE below remains self-contained.
-    external: ['@elevenlabs/client'],
   }),
   build({
     ...shared,

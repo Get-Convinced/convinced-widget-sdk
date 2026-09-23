@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { ConvincedAgentAdmin, ConvincedApiError } from '../src'
 
 const current = {
-  source: 'elevenlabs', agentId: 'agent_enmovil', systemPrompt: 'Current prompt',
+  source: 'convinced', agentId: 'agent_enmovil', systemPrompt: 'Current prompt',
   firstMessage: 'Hello',
   revision: 'a'.repeat(64), branchId: 'branch_main', versionId: 'version_1', trafficPercentage: 100,
 }

@@ -71,8 +71,8 @@ export interface ClientToolExecutionContext {
   sessionId: string | null
   turnId: string
   /** Defaults to chat for direct registry callers created before voice support. */
-  surface?: 'chat' | 'voice'
-  conversationId?: string
+  surface?: 'chat' | 'voice' | 'webmcp'
+  liveSessionId?: string
   signal: AbortSignal
 }
 
@@ -202,7 +202,6 @@ export interface WidgetConfig {
   voiceEnabled?: boolean
   voiceMode?: WidgetVoiceMode
   voiceProvider?: string
-  elevenLabsAgentId?: string | null
   slidesEnabled?: boolean
   videosEnabled?: boolean
   identityCaptureAfterExchanges?: number
@@ -398,11 +397,6 @@ export interface WidgetVisitorIntelResponse {
   updatedAt?: number
 }
 
-export interface WidgetVoiceCredentialResponse {
-  conversationToken: string
-  connectionType: 'webrtc'
-}
-
 export interface WidgetDemoRequestInput {
   name: string
   email: string
@@ -555,8 +549,6 @@ export interface EndWidgetSessionOptions {
   clientMessages?: Array<{ role: 'user' | 'assistant'; content: string }>
   /** Exact slide filenames actually shown during this session. */
   slidesViewed?: string[]
-  elevenLabsConversationId?: string
-  elevenLabsConversationIds?: string[]
   email?: string
   name?: string
   company?: string
@@ -633,6 +625,8 @@ export interface SendMessageOptions {
   history?: ChatHistoryMessage[]
   context?: ChatRequestContext
   signal?: AbortSignal
+  /** Speak the written result when voice is enabled. Defaults to true. */
+  speak?: boolean
 }
 
 export interface InitializeOptions {

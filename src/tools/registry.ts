@@ -109,7 +109,7 @@ export class ClientToolRegistry {
 
   /**
    * Execute a registered tool by name from a non-SSE adapter (for example,
-   * ElevenLabs voice). This constructs canonical call metadata, validates the
+   * browser live audio). This constructs canonical call metadata, validates the
    * argument object against the registered schema, enforces all bounds, and
    * denies consented tools unless the caller explicitly authorizes the call.
    */
