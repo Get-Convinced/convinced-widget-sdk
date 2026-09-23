@@ -1,12 +1,13 @@
-# Convinced Widget SDK 0.1.6
+# Convinced Widget SDK 0.1.7
 
 A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, Luna conversation, knowledge, prompts, and OpenAI credentials.
 
-Version 0.1.6 uses one conversation for text and speech:
+Version 0.1.7 uses one conversation for text and speech:
 
 - `gpt-6-luna` produces grounded answers, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
 - Live handles brief conversational replies and delegates organization facts, reasoning, and page actions to the same Luna chat. Typed input while voice is active stays in that chat and is spoken automatically.
+- A deliberate typed request during an active delegated voice task replaces that task before Luna runs another host tool.
 - Ending voice leaves chat active. Chat-only use creates no Live session.
 - One `ClientToolRegistry` powers chat, speech, slides, forms, page actions, and WebMCP.
 
@@ -15,7 +16,7 @@ No OpenAI key or provider configuration belongs in browser code. A browser recei
 ## Install
 
 ```bash
-npm install --save-exact @convinced/widget-sdk@0.1.6
+npm install --save-exact @convinced/widget-sdk@0.1.7
 ```
 
 ## Headless quickstart
@@ -85,9 +86,9 @@ await client.sendMessage('Send me the implementation steps')
 await client.endSession({ slidesViewed: ['roi-overview.png'] })
 ```
 
-The browser sends its SDP offer to the Convinced backend. The backend creates `gpt-live-1` with client delegation. Live can answer short conversational turns directly. The SDK records those completed exchanges in the shared session history, so typed and delegated follow-ups retain their context. When Live delegates, the SDK sends the current utterance through `client.sendMessage()`. Luna produces the canonical rich answer and runs the shared tool registry through the signed chat continuation; Live receives that verified answer as commentary and explains it naturally in speech. A newer delegation prevents an older answer from being spoken.
+The browser sends its SDP offer to the Convinced backend. The backend creates `gpt-live-1` with client delegation. Live can answer short conversational turns directly. The SDK records those completed exchanges in the shared session history, so typed and delegated follow-ups retain their context. When Live delegates, the SDK sends the current utterance through Luna chat. Luna produces the canonical rich answer and runs the shared tool registry through the signed chat continuation. A short, verified voice briefing goes to Live for natural speech. A newer delegation cancels the older chat and tool work before starting the correction.
 
-Live sends a concise, media-free excerpt of each Luna answer for speech. Page context can still be up to 8 KiB; the SDK sends it in small ordered updates that fit the Live append limit.
+If the backend cannot supply a voice briefing, Live receives one complete sentence from the written answer, or a short invitation to explore the details in chat. Page context can still be up to 8 KiB; the SDK sends it in small ordered updates that fit the Live append limit.
 
 The SDK allows one Live controller per `ConvincedClient`. This prevents duplicate microphones, speech, and paid sessions. Reuse the controller across enable/disable cycles.
 

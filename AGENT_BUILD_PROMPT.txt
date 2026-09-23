@@ -1,4 +1,4 @@
-You are integrating @convinced/widget-sdk@0.1.6 into a customer-owned website.
+You are integrating @convinced/widget-sdk@0.1.7 into a customer-owned website.
 
 GOAL
 Build one headless Convinced agent that works on this website's UI and capabilities. Keep one Convinced session across typed input, Live conversation, Luna-delegated work, knowledge, Markdown/media, page tools, identity, and handoff. The host application owns all layout and visual behavior.

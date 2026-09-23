@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
-  ConvincedClient, ConvincedLiveController, type JsonObject,
+  ClientToolRegistry, ConvincedClient, ConvincedLiveController, HOST_TOOL_PROTOCOL_VERSION, type JsonObject,
 } from '../src'
 
 class FakeChannel {
@@ -79,6 +79,30 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveRequests).toBe(0)
   })
 
+  test('ending while the Live connection is pending does not surface a session error', async () => {
+    installBrowser()
+    let requestStarted!: () => void
+    const started = new Promise<void>(resolve => { requestStarted = resolve })
+    const errors: Error[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async (_input, init) => {
+        requestStarted()
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+      }) as typeof fetch,
+      onError: error => errors.push(error),
+    })
+    const pendingStart = controller.start()
+    await started
+    await controller.end()
+    peer.channel.emit({ type: 'error', error: { message: 'The session closed before context injection.' } })
+    await pendingStart
+    expect(controller.state.status).toBe('disconnected')
+    expect(errors).toEqual([])
+  })
+
   test('uses the official protocol, mute, and graceful close', async () => {
     installBrowser()
     let requestBody: JsonObject = {}
@@ -102,9 +126,7 @@ describe('GPT Live WebRTC controller', () => {
     controller.sendBackendResult(`Margin changed by -5%. [SLIDE:dispatch.png]\n\n${'Detail. '.repeat(2_000)}\nFinal caveat: -2 units.`)
     const commentary = [...peer.channel.sent].reverse()
       .find((event: JsonObject) => event.type === 'session.commentary.append')
-    expect(commentary?.content).toContain('Margin changed by -5%.')
-    expect(commentary?.content).toContain('[Middle omitted for voice context]')
-    expect(commentary?.content).toContain('Final caveat: -2 units.')
+    expect(commentary?.content).toBe('Margin changed by -5%.')
     expect(commentary?.content).not.toContain('[SLIDE:')
     expect(new TextEncoder().encode(String(commentary?.content)).byteLength).toBeLessThanOrEqual(450)
 
@@ -139,6 +161,7 @@ describe('GPT Live WebRTC controller', () => {
     let sdkVersion = ''
     let liveCreates = 0
     let chatCalls = 0
+    const voiceTurns: unknown[] = []
     const client = new ConvincedClient({
       orgSlug: 'demo',
       agentId: 'deployment_live',
@@ -161,13 +184,16 @@ describe('GPT Live WebRTC controller', () => {
         if (url.pathname.endsWith('/chat')) {
           chatCalls += 1
           const body = JSON.parse(String(init.body)) as JsonObject
+          voiceTurns.push(body.voiceTurn)
           const message = String(body.message)
           const answer = message === 'Show the ROI slide'
             ? '### ROI\n[Read the proof](https://example.com/roi)\n\n[SLIDE:roi.svg]'
             : message === 'Typed follow-up'
               ? '**Typed while voice stays on.**'
               : 'Continued after voice was disabled.'
-          return sse(answer)
+          return message === 'Show the ROI slide'
+            ? sseWithBriefing(answer, 'The ROI slide is open. It shows the proof for this workflow.')
+            : sse(answer)
         }
         if (url.pathname.endsWith('/session')) {
           sessionBody = JSON.parse(String(init.body)) as JsonObject
@@ -202,7 +228,7 @@ describe('GPT Live WebRTC controller', () => {
     expect(peer.channel.sent).toContainEqual(expect.objectContaining({
       type: 'session.commentary.append',
       delegation_id: 'delegation_voice_1',
-      content: expect.not.stringContaining('[SLIDE:'),
+      content: 'The ROI slide is open. It shows the proof for this workflow.',
     }))
 
     await client.sendMessage('Typed follow-up')
@@ -219,10 +245,11 @@ describe('GPT Live WebRTC controller', () => {
     expect(liveCapability).toBe('capability_owned')
     expect(liveWidgetToken).toBe('widget_token')
     expect(sessionBody.agentId).toBe('deployment_live')
-    expect(sdkVersion).toBe('0.1.6')
+    expect(sdkVersion).toBe('0.1.7')
     expect(Object.keys(liveBody).sort()).toEqual(['sdp'])
     expect(liveCreates).toBe(1)
     expect(chatCalls).toBe(3)
+    expect(voiceTurns).toEqual([true, true, undefined])
     expect(endBody).toMatchObject({
       sessionId: 'session_owned',
       clientMessages: [
@@ -235,6 +262,61 @@ describe('GPT Live WebRTC controller', () => {
       ],
     })
     expect(endBody).not.toHaveProperty('liveSessionIds')
+  })
+
+  test('a typed Live turn keeps its voice identity when voice ends during a host action', async () => {
+    installBrowser()
+    const bodies: JsonObject[] = []
+    let live!: ConvincedLiveController
+    const tools = new ClientToolRegistry([{
+      version: HOST_TOOL_PROTOCOL_VERSION,
+      name: 'host_read_costs',
+      description: 'Read the visible cost panel.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      locality: 'host', effect: 'read', consent: 'none', timeoutMs: 2_000,
+      handler: async () => {
+        await live.end()
+        return { panel: 'costs', visible: true }
+      },
+    }])
+    const client = new ConvincedClient({
+      orgSlug: 'demo', tools,
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          const body = JSON.parse(String(init.body)) as JsonObject
+          bodies.push(body)
+          if (body.resumeClientTurn === true) return sse('The cost panel is visible.')
+          const turnId = String(body.clientTurnId)
+          return sseEvents([
+            { type: 'client_tool_call', turnId, call: {
+              version: 1, id: 'costs_1', name: 'host_read_costs', args: {},
+              locality: 'host', effect: 'read', consent: 'none',
+            } },
+            { type: 'client_tool_pause', turnId, capability: 'signed-costs', expiresAt: Date.now() + 5_000 },
+          ])
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    live = client.createLiveController()
+    await live.start()
+    const answer = await client.sendMessage('Show costs')
+    expect(answer.text).toBe('The cost panel is visible.')
+    expect(live.state.status).toBe('disconnected')
+    expect(bodies.map(body => body.voiceTurn)).toEqual([true, true])
+    expect(bodies[1]?.clientToolResults).toEqual([expect.objectContaining({
+      callId: 'costs_1', name: 'host_read_costs', ok: true,
+    })])
   })
 
   test('does not speak a delegated answer after the Live generation ends', async () => {
@@ -392,13 +474,17 @@ describe('GPT Live WebRTC controller', () => {
   test('a newer delegation suppresses an older answer', async () => {
     installBrowser()
     const finish = new Map<string, (value: { message: string }) => void>()
+    const signals = new Map<string, AbortSignal>()
     const controller = new ConvincedLiveController({
       descriptor: { sessionUrl: 'https://app.example/live' },
       fetch: (async () => {
         queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
         return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
       }) as unknown as typeof fetch,
-      onClientDelegation: ({ delegationId }) => new Promise(resolve => { finish.set(delegationId, resolve) }),
+      onClientDelegation: ({ delegationId }, signal) => {
+        signals.set(delegationId, signal)
+        return new Promise(resolve => { finish.set(delegationId, resolve) })
+      },
     })
     await controller.start()
     peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show the old slide.' })
@@ -406,6 +492,7 @@ describe('GPT Live WebRTC controller', () => {
     await waitFor(() => finish.has('old'))
     peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Actually, show the new slide.' })
     peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'new', target: 'client' } })
+    expect(signals.get('old')?.aborted).toBe(true)
     finish.get('old')!({ message: 'Old slide is visible.' })
     await waitFor(() => finish.has('new'))
     finish.get('new')!({ message: 'New slide is visible.' })
@@ -414,6 +501,113 @@ describe('GPT Live WebRTC controller', () => {
       type: 'session.commentary.append', delegation_id: 'old',
     }))
     await controller.end()
+  })
+
+  test('a spoken correction aborts stale Luna chat and removes its partial answer', async () => {
+    installBrowser()
+    const oldRequestSignals: AbortSignal[] = []
+    let oldStarted!: () => void
+    const started = new Promise<void>(resolve => { oldStarted = resolve })
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          const body = JSON.parse(String(init.body)) as JsonObject
+          if (body.message === 'Show old slide.') {
+            if (init.signal) oldRequestSignals.push(init.signal)
+            oldStarted()
+            return new Response(new ReadableStream<Uint8Array>({
+              start(controller) { controller.enqueue(new TextEncoder().encode('data: {"delta":"Stale draft"}\n\n')) },
+            }), { headers: { 'Content-Type': 'text/event-stream' } })
+          }
+          return sse('The new slide is visible.')
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const live = client.createLiveController()
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show old slide.', end_ms: 100 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 100,
+      delegation: { id: 'old', target: 'client' } })
+    await started
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show new slide.', end_ms: 300 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 300,
+      delegation: { id: 'new', target: 'client' } })
+    await waitFor(() => client.state.messages.some(message => message.text === 'The new slide is visible.'))
+    expect(oldRequestSignals[0]?.aborted).toBe(true)
+    expect(client.state.messages.map(message => message.text)).toEqual([
+      'Show new slide.', 'The new slide is visible.',
+    ])
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'old',
+    }))
+    await live.end()
+  })
+
+  test('a typed correction preempts delegated voice work before the next host request', async () => {
+    installBrowser()
+    const oldRequestSignals: AbortSignal[] = []
+    let oldStarted!: () => void
+    const started = new Promise<void>(resolve => { oldStarted = resolve })
+    const liveErrors: Error[] = []
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          const body = JSON.parse(String(init.body)) as JsonObject
+          if (body.message === 'Show old slide.') {
+            if (init.signal) oldRequestSignals.push(init.signal)
+            oldStarted()
+            return new Response(new ReadableStream<Uint8Array>({
+              start(controller) { controller.enqueue(new TextEncoder().encode('data: {"delta":"Stale draft"}\n\n')) },
+            }), { headers: { 'Content-Type': 'text/event-stream' } })
+          }
+          expect(body.message).toBe('Wait, show costs instead.')
+          return sseWithBriefing('The cost view is open.', 'The cost view is open.')
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const live = client.createLiveController({ onError: error => liveErrors.push(error) })
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show old slide.', end_ms: 100 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 100,
+      delegation: { id: 'old', target: 'client' } })
+    await started
+    await client.sendMessage('Wait, show costs instead.')
+    expect(oldRequestSignals[0]?.aborted).toBe(true)
+    expect(client.state.messages.map(message => message.text)).toEqual([
+      'Wait, show costs instead.', 'The cost view is open.',
+    ])
+    expect(peer.channel.sent).toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: null, content: 'The cost view is open.',
+    }))
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'old',
+    }))
+    expect(liveErrors).toEqual([])
+    await live.end()
   })
 
   test('reports browser audio playback failure to the host', async () => {
@@ -465,6 +659,21 @@ function sse(text: string): Response {
   return new Response(`data: ${JSON.stringify({ delta: text })}\n\ndata: [DONE]\n\n`, {
     headers: { 'Content-Type': 'text/event-stream' },
   })
+}
+
+function sseWithBriefing(text: string, briefing: string): Response {
+  return new Response(
+    `data: ${JSON.stringify({ type: 'voice_briefing', text: briefing })}\n\n` +
+    `data: ${JSON.stringify({ delta: text })}\n\ndata: [DONE]\n\n`,
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  )
+}
+
+function sseEvents(events: JsonObject[]): Response {
+  return new Response(
+    `${events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`,
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  )
 }
 
 function installBrowser(play: () => Promise<void> = async () => undefined): void {

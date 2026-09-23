@@ -56,7 +56,11 @@ import {
 } from './types.js'
 
 export const DEFAULT_API_BASE = 'https://app.getconvinced.ai'
-const MAX_CLIENT_TOOL_ROUNDS = 4
+const MAX_CLIENT_TOOL_ROUNDS = 16
+type InternalSendMessageOptions = SendMessageOptions & {
+  voiceTurn?: boolean
+  discardOnAbort?: boolean
+}
 export const MAX_WIDGET_CHAT_REQUEST_BYTES = 256 * 1024
 export const MAX_WIDGET_CHAT_MESSAGE_BYTES = 8 * 1024
 export const MAX_WIDGET_CHAT_HISTORY_MESSAGES = 20
@@ -92,7 +96,7 @@ export interface ConvincedClientOptions {
   tools?: ClientToolRegistry | ClientTool[]
   /** Required to execute tools whose manifest consent is session or per_call. */
   authorizeToolCall?: ToolCallAuthorizer
-  /** May reduce, but never exceed, the protocol maximum of four continuation rounds. */
+  /** May reduce, but never exceed, the protocol maximum of sixteen continuation rounds. */
   maxClientToolRounds?: number
   defaultChatContext?: SendMessageOptions['context']
 }
@@ -142,6 +146,7 @@ export class ConvincedClient {
   private lastSessionInput: WidgetSessionInput | null = null
   private visitorIdentity: VisitorIdentity | null = null
   private activeTurnController: AbortController | null = null
+  private activeDelegatedTurnAbort: AbortController | null = null
   private messageQueue: Promise<void> = Promise.resolve()
   private initializePromise: Promise<ConvincedClientState> | null = null
   private endSessionPromise: Promise<Record<string, unknown>> | null = null
@@ -700,18 +705,31 @@ export class ConvincedClient {
         this.appendMessage(createMessage('user', user.slice(0, 1024)), false)
         this.appendMessage(createMessage('assistant', assistant.slice(0, 1024)), false)
       },
-      onClientDelegation: async ({ transcript }) => {
+      onClientDelegation: async ({ transcript }, signal) => {
         const delegatedSessionId = boundSessionId
         if (!delegatedSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
           throw new ConvincedSdkError('live_session_changed', 'The Live session no longer owns this conversation.')
         }
-        const response = await this.sendMessage(transcript, {
-          speak: false,
-        })
-        if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
-          throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
+        const controller = new AbortController()
+        const abortWithLive = () => controller.abort(signal.reason)
+        if (signal.aborted) abortWithLive()
+        else signal.addEventListener('abort', abortWithLive, { once: true })
+        this.activeDelegatedTurnAbort = controller
+        try {
+          const response = await this.enqueueMessage(transcript, {
+            speak: false,
+            voiceTurn: true,
+            discardOnAbort: true,
+            signal: controller.signal,
+          })
+          if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
+            throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
+          }
+          return { message: response.text, ...(response.voiceBriefing ? { speech: response.voiceBriefing } : {}) }
+        } finally {
+          signal.removeEventListener('abort', abortWithLive)
+          if (this.activeDelegatedTurnAbort === controller) this.activeDelegatedTurnAbort = null
         }
-        return { message: response.text }
       },
     })
     this.sessionLives.add(controller)
@@ -782,6 +800,13 @@ export class ConvincedClient {
   }
 
   sendMessage(message: string, options: SendMessageOptions = {}): Promise<ChatMessage> {
+    this.activeDelegatedTurnAbort?.abort(new ConvincedSdkError(
+      'turn_cancelled', 'A typed request superseded the active voice request.',
+    ))
+    return this.enqueueMessage(message, options)
+  }
+
+  private enqueueMessage(message: string, options: InternalSendMessageOptions): Promise<ChatMessage> {
     const queuedSessionId = this.stateValue.session?.sessionId ?? null
     const run = this.messageQueue.then(
       () => this.sendMessageNow(message, options, queuedSessionId),
@@ -793,10 +818,11 @@ export class ConvincedClient {
 
   private async sendMessageNow(
     message: string,
-    options: SendMessageOptions,
+    options: InternalSendMessageOptions,
     queuedSessionId: string | null,
   ): Promise<ChatMessage> {
     this.assertUsable()
+    if (options.signal?.aborted) throw abortError(options.signal)
     if (queuedSessionId && queuedSessionId !== this.stateValue.session?.sessionId) {
       throw new ConvincedSdkError('chat_session_changed', 'The queued message belongs to a previous session.')
     }
@@ -832,6 +858,10 @@ export class ConvincedClient {
     const clientTurnId = clientTools.length > 0 ? protocolTurnId() : null
     const seenClientToolCallIds = new Set<string>()
     let currentClientToolResults: ClientToolResult[] = []
+    // The backend binds this to the signed continuation. A voice disconnect
+    // during a host action must not change the identity of the same turn.
+    const voiceTurn = options.voiceTurn === true ||
+      (options.speak !== false && [...this.sessionLives].some(live => live.state.status === 'connected'))
 
     const controller = new AbortController()
     this.activeTurnController = controller
@@ -845,6 +875,7 @@ export class ConvincedClient {
     })
 
     let fullText = ''
+    let voiceBriefing: string | undefined
     let sawProfileGate = false
     let continuation:
       | {
@@ -856,6 +887,7 @@ export class ConvincedClient {
 
     try {
       while (true) {
+        voiceBriefing = undefined
         throwIfAborted(controller.signal)
         const body = {
           ...sessionChatContext(this.stateValue),
@@ -863,6 +895,7 @@ export class ConvincedClient {
           ...(options.context ?? {}),
           sessionId,
           message: trimmed,
+          voiceTurn: voiceTurn || undefined,
           history,
           clientTools: clientTools.length > 0 ? clientTools : undefined,
           clientTurnId: clientTools.length > 0 ? clientTurnId : undefined,
@@ -913,6 +946,13 @@ export class ConvincedClient {
           if (event.type === 'client_tool_pause') {
             pause = normalizePause(event)
             this.events.emit('client_tool_pause', pause)
+            continue
+          }
+          if (event.type === 'voice_briefing') {
+            if (typeof event.text === 'string' && event.text.trim() &&
+                new TextEncoder().encode(event.text.trim()).byteLength <= 450) {
+              voiceBriefing = event.text.trim()
+            }
             continue
           }
           if (typeof (event as { delta?: unknown }).delta === 'string') {
@@ -1036,7 +1076,8 @@ export class ConvincedClient {
         slideMetadata: this.stateValue.slideMetadata,
         videos: this.stateValue.session?.recommendedVideos ?? [],
       })
-      const complete = { ...assistantMessage, text: fullText, content }
+      const complete = { ...assistantMessage, text: fullText, content,
+        ...(voiceBriefing ? { voiceBriefing } : {}) }
       if (this.stateValue.session?.sessionId !== sessionId) {
         throw new ConvincedSdkError('chat_session_changed', 'The session changed before the answer completed.')
       }
@@ -1047,7 +1088,7 @@ export class ConvincedClient {
       if (options.speak !== false && complete.text.trim()) {
         for (const live of this.sessionLives) {
           if (live.state.status !== 'connected') continue
-          try { live.sendBackendResult(complete.text) } catch { /* transport closed */ }
+          try { live.sendBackendResult(complete.voiceBriefing ?? complete.text) } catch { /* transport closed */ }
           break
         }
       }
@@ -1056,6 +1097,12 @@ export class ConvincedClient {
       const normalizedError = controller.signal.aborted
         ? abortError(controller.signal)
         : error
+      if (controller.signal.aborted && options.discardOnAbort) {
+        this.removeMessage(assistantMessage.id)
+        this.removeMessage(userMessage.id)
+        if (this.stateValue.status !== 'destroyed') this.patchState({ status: 'ready', activeTurnId: null, error: null })
+        throw normalizedError
+      }
       if (fullText) {
         this.replaceMessage({
           ...assistantMessage,
@@ -1155,7 +1202,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.6')
+    headers.set('x-convinced-sdk-version', '0.1.7')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 

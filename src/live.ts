@@ -67,7 +67,7 @@ export interface LiveClientDelegation {
 
 export interface LiveClientDelegationResult {
   message: string
-  /** Optional shorter faithful context for speech. Control directives are removed and UTF-8 size is bounded. */
+  /** Short, verified briefing for speech; the full message remains in chat. */
   speech?: string
 }
 
@@ -87,6 +87,7 @@ export interface ConvincedLiveControllerOptions {
   onNativeExchange?: (user: string, assistant: string) => void
   onClientDelegation?: (
     delegation: LiveClientDelegation,
+    signal: AbortSignal,
   ) => LiveClientDelegationResult | Promise<LiveClientDelegationResult>
 }
 
@@ -148,6 +149,7 @@ export class ConvincedLiveController {
   private readonly inputTranscriptSegments: string[] = []
   private readonly pendingDelegations: PendingDelegation[] = []
   private latestDelegationId: string | null = null
+  private activeDelegation: AbortController | null = null
   private backendSpeechActive = false
   private backendSpeechUntil = 0
   private delegationTimer: ReturnType<typeof setTimeout> | null = null
@@ -199,8 +201,9 @@ export class ConvincedLiveController {
   }
 
   async end(): Promise<void> {
+    this.cancelDelegation()
     const channel = this.channel
-    if (!channel) {
+    if (!channel || this.stateValue.status === 'connecting') {
       // getUserMedia can still be waiting for permission. Invalidate that
       // start now so a late grant cannot revive a session after End/Reset.
       ++this.generation
@@ -311,7 +314,12 @@ export class ConvincedLiveController {
       channel.onmessage = (message) => this.handleServerEvent(message.data, generation)
       channel.onerror = () => started.reject(new Error('Live data channel failed.'))
       channel.onclose = () => {
-        if (generation !== this.generation || this.stateValue.status === 'disconnecting') return
+        if (generation !== this.generation) return
+        if (this.stateValue.status === 'disconnecting') {
+          this.sessionClosed?.()
+          return
+        }
+        ++this.generation
         this.flushTranscripts()
         this.abort.abort(new Error('Live data channel closed.'))
         this.cleanup()
@@ -334,6 +342,7 @@ export class ConvincedLiveController {
         body: JSON.stringify({ sdp }),
         signal: this.abort.signal,
       })
+      if (generation !== this.generation) return this.state
       if (!response.ok) {
         const responseBody = await response.json().catch(() => null) as { error?: unknown } | null
         throw new Error(typeof responseBody?.error === 'string'
@@ -341,6 +350,7 @@ export class ConvincedLiveController {
           : `Live session creation failed (${response.status}).`)
       }
       const body = await response.json() as { session?: { id?: unknown }; transport?: { type?: unknown; sdp?: unknown } }
+      if (generation !== this.generation) return this.state
       const liveSessionId = validId(body.session?.id)
       if (!liveSessionId || body.transport?.type !== 'webrtc' || typeof body.transport.sdp !== 'string') {
         throw new Error('Live session endpoint returned an invalid response.')
@@ -348,6 +358,7 @@ export class ConvincedLiveController {
       this.update({ liveSessionId })
       call(() => this.options.onLiveSessionId?.(liveSessionId))
       await peer.setRemoteDescription({ type: 'answer', sdp: body.transport.sdp })
+      if (generation !== this.generation) return this.state
       await timeout(started.promise, START_TIMEOUT_MS)
       if (generation !== this.generation) return this.state
       this.update({ status: 'connected', mode: 'listening' })
@@ -385,6 +396,10 @@ export class ConvincedLiveController {
       return
     }
     if (type === 'error') {
+      if (this.stateValue.status === 'disconnecting' || this.stateValue.status === 'disconnected') {
+        this.sessionClosed?.()
+        return
+      }
       const error = new Error(typeof event.error?.message === 'string' ? event.error.message : 'Live session error.')
       this.sessionStartFailed?.(error)
       this.events.emit('error', error)
@@ -403,7 +418,9 @@ export class ConvincedLiveController {
       const delegationId = validId(event.delegation.id, 256)
       if (!delegationId || this.handledDelegations.has(delegationId)) return
       this.handledDelegations.add(delegationId)
+      this.cancelDelegation()
       this.latestDelegationId = delegationId
+      this.pendingDelegations.length = 0
       this.pendingDelegations.push({
         generation,
         receivedAt: Date.now(),
@@ -553,11 +570,14 @@ export class ConvincedLiveController {
     delegation: LiveClientDelegation,
     generation: number,
   ): Promise<void> {
+    if (delegation.delegationId !== this.latestDelegationId || generation !== this.generation) return
+    const controller = new AbortController()
+    this.activeDelegation = controller
     try {
       if (!this.options.onClientDelegation) throw new Error('Live client delegation is not configured.')
-      const result = await this.options.onClientDelegation(delegation)
+      const result = await this.options.onClientDelegation(delegation, controller.signal)
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
-          delegation.delegationId !== this.latestDelegationId) return
+          delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
       const messageText = bounded(result.message, 'backend message', 64 * 1024)
       const message: LiveBackendMessage = {
         message: messageText,
@@ -568,14 +588,22 @@ export class ConvincedLiveController {
       this.sendBackendResult(result.speech ?? messageText, delegation.delegationId)
     } catch (cause) {
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
-          delegation.delegationId !== this.latestDelegationId) return
+          delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
+      if (isCancelledTurn(cause)) return
       const error = cause instanceof Error ? cause : new Error(String(cause))
       this.events.emit('error', error)
       call(() => this.options.onError?.(error, delegation))
       if (this.stateValue.status === 'connected') {
         this.sendBackendResult('I could not complete that request. Please try again.', delegation.delegationId)
       }
+    } finally {
+      if (this.activeDelegation === controller) this.activeDelegation = null
     }
+  }
+
+  private cancelDelegation(): void {
+    this.activeDelegation?.abort(new Error('Live request superseded.'))
+    this.activeDelegation = null
   }
 
   private flushTranscripts(): void {
@@ -613,6 +641,7 @@ export class ConvincedLiveController {
   }
 
   private cleanup(): void {
+    this.cancelDelegation()
     this.sessionStarted = null
     this.sessionStartFailed = null
     this.sessionClosed = null
@@ -641,6 +670,10 @@ export class ConvincedLiveController {
     this.inputActive = false
     this.outputActive = false
   }
+}
+
+function isCancelledTurn(value: unknown): boolean {
+  return !!value && typeof value === 'object' && 'code' in value && value.code === 'turn_cancelled'
 }
 
 function validateDescriptor(descriptor: LiveSessionDescriptor): void {
@@ -677,10 +710,17 @@ function bounded(value: string, name: string, maxBytes: number): string {
 
 function liveCommentary(value: string): string {
   const faithful = stripMarkdownLinks(stripMediaDirectives(value))
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/\*\*/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   if (!faithful) throw new Error('backend speech result must not be empty.')
-  return boundedWithMiddleOmission(faithful, MAX_LIVE_APPEND_BYTES)
+  if (new TextEncoder().encode(faithful).byteLength <= MAX_LIVE_APPEND_BYTES) return faithful
+  // A long written answer is not a voice script. Use a complete factual
+  // sentence until the backend supplies a dedicated voice briefing.
+  const sentence = faithful.match(/[^.!?\n]+[.!?](?=\s|$)/)?.[0]?.trim()
+  if (sentence && new TextEncoder().encode(sentence).byteLength <= MAX_LIVE_APPEND_BYTES) return sentence
+  return 'I have more detail in the chat. Which part would you like to explore?'
 }
 
 function stripMarkdownLinks(value: string): string {
@@ -731,39 +771,6 @@ function stripMediaDirectives(value: string): string {
     cursor = closing + 1
   }
   return result
-}
-
-function boundedWithMiddleOmission(value: string, maxBytes: number): string {
-  const encoder = new TextEncoder()
-  if (encoder.encode(value).byteLength <= maxBytes) return value
-  const marker = '\n\n[Middle omitted for voice context]\n\n'
-  const markerBytes = encoder.encode(marker).byteLength
-  const available = Math.max(2, maxBytes - markerBytes)
-  const headBudget = Math.floor(available * 0.7)
-  const tailBudget = available - headBudget
-  return `${utf8Prefix(value, headBudget).trimEnd()}${marker}${utf8Suffix(value, tailBudget).trimStart()}`
-}
-
-function utf8Prefix(value: string, maxBytes: number): string {
-  const encoder = new TextEncoder()
-  let output = ''
-  for (const character of value) {
-    if (encoder.encode(output + character).byteLength > maxBytes) break
-    output += character
-  }
-  return output
-}
-
-function utf8Suffix(value: string, maxBytes: number): string {
-  const encoder = new TextEncoder()
-  let output = ''
-  const characters = Array.from(value)
-  for (let index = characters.length - 1; index >= 0; index -= 1) {
-    const candidate = `${characters[index]}${output}`
-    if (encoder.encode(candidate).byteLength > maxBytes) break
-    output = candidate
-  }
-  return output
 }
 
 function validId(value: unknown, max = 256): string | null {

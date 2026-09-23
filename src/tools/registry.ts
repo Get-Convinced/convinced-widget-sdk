@@ -231,9 +231,14 @@ export class ClientToolRegistry {
     const timeoutController = new AbortController()
     const abortFromTurn = () => timeoutController.abort(context.signal.reason)
     context.signal.addEventListener('abort', abortFromTurn, { once: true })
+    let rejectOnAbort: ((reason: unknown) => void) | undefined
+    const aborted = new Promise<never>((_, reject) => { rejectOnAbort = reject })
+    const stopWaiting = () => rejectOnAbort?.(context.signal.reason ?? new Error('Turn cancelled.'))
+    context.signal.addEventListener('abort', stopWaiting, { once: true })
     let timeout: ReturnType<typeof setTimeout> | undefined
 
     try {
+      if (context.signal.aborted) throw context.signal.reason ?? new Error('Turn cancelled.')
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           timeoutController.abort(new Error('Client tool timed out.'))
@@ -243,6 +248,7 @@ export class ClientToolRegistry {
       const value = await Promise.race([
         tool.handler(call.args, { ...context, signal: timeoutController.signal }),
         timeoutPromise,
+        aborted,
       ])
       const result = value === undefined ? null : toJsonValue(value)
       const resultDepth = jsonDepth(result)
@@ -281,6 +287,7 @@ export class ClientToolRegistry {
     } finally {
       if (timeout) clearTimeout(timeout)
       context.signal.removeEventListener('abort', abortFromTurn)
+      context.signal.removeEventListener('abort', stopWaiting)
     }
   }
 }
