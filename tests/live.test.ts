@@ -500,6 +500,61 @@ describe('GPT Live WebRTC controller', () => {
     await live.end()
   })
 
+  test('a typed correction preempts delegated voice work before the next host request', async () => {
+    installBrowser()
+    const oldRequestSignals: AbortSignal[] = []
+    let oldStarted!: () => void
+    const started = new Promise<void>(resolve => { oldStarted = resolve })
+    const liveErrors: Error[] = []
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          const body = JSON.parse(String(init.body)) as JsonObject
+          if (body.message === 'Show old slide.') {
+            if (init.signal) oldRequestSignals.push(init.signal)
+            oldStarted()
+            return new Response(new ReadableStream<Uint8Array>({
+              start(controller) { controller.enqueue(new TextEncoder().encode('data: {"delta":"Stale draft"}\n\n')) },
+            }), { headers: { 'Content-Type': 'text/event-stream' } })
+          }
+          expect(body.message).toBe('Wait, show costs instead.')
+          return sseWithBriefing('The cost view is open.', 'The cost view is open.')
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const live = client.createLiveController({ onError: error => liveErrors.push(error) })
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show old slide.', end_ms: 100 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 100,
+      delegation: { id: 'old', target: 'client' } })
+    await started
+    await client.sendMessage('Wait, show costs instead.')
+    expect(oldRequestSignals[0]?.aborted).toBe(true)
+    expect(client.state.messages.map(message => message.text)).toEqual([
+      'Wait, show costs instead.', 'The cost view is open.',
+    ])
+    expect(peer.channel.sent).toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: null, content: 'The cost view is open.',
+    }))
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'old',
+    }))
+    expect(liveErrors).toEqual([])
+    await live.end()
+  })
+
   test('reports browser audio playback failure to the host', async () => {
     installBrowser(async () => { throw new Error('Audio playback was blocked.') })
     const errors: Error[] = []

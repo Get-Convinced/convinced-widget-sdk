@@ -146,6 +146,7 @@ export class ConvincedClient {
   private lastSessionInput: WidgetSessionInput | null = null
   private visitorIdentity: VisitorIdentity | null = null
   private activeTurnController: AbortController | null = null
+  private activeDelegatedTurnAbort: AbortController | null = null
   private messageQueue: Promise<void> = Promise.resolve()
   private initializePromise: Promise<ConvincedClientState> | null = null
   private endSessionPromise: Promise<Record<string, unknown>> | null = null
@@ -709,16 +710,26 @@ export class ConvincedClient {
         if (!delegatedSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
           throw new ConvincedSdkError('live_session_changed', 'The Live session no longer owns this conversation.')
         }
-        const response = await this.enqueueMessage(transcript, {
-          speak: false,
-          voiceTurn: true,
-          discardOnAbort: true,
-          signal,
-        })
-        if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
-          throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
+        const controller = new AbortController()
+        const abortWithLive = () => controller.abort(signal.reason)
+        if (signal.aborted) abortWithLive()
+        else signal.addEventListener('abort', abortWithLive, { once: true })
+        this.activeDelegatedTurnAbort = controller
+        try {
+          const response = await this.enqueueMessage(transcript, {
+            speak: false,
+            voiceTurn: true,
+            discardOnAbort: true,
+            signal: controller.signal,
+          })
+          if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
+            throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
+          }
+          return { message: response.text, ...(response.voiceBriefing ? { speech: response.voiceBriefing } : {}) }
+        } finally {
+          signal.removeEventListener('abort', abortWithLive)
+          if (this.activeDelegatedTurnAbort === controller) this.activeDelegatedTurnAbort = null
         }
-        return { message: response.text, ...(response.voiceBriefing ? { speech: response.voiceBriefing } : {}) }
       },
     })
     this.sessionLives.add(controller)
@@ -789,6 +800,9 @@ export class ConvincedClient {
   }
 
   sendMessage(message: string, options: SendMessageOptions = {}): Promise<ChatMessage> {
+    this.activeDelegatedTurnAbort?.abort(new ConvincedSdkError(
+      'turn_cancelled', 'A typed request superseded the active voice request.',
+    ))
     return this.enqueueMessage(message, options)
   }
 

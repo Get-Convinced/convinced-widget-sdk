@@ -7,6 +7,7 @@ Version 0.1.7 uses one conversation for text and speech:
 - `gpt-6-luna` produces grounded answers, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
 - Live handles brief conversational replies and delegates organization facts, reasoning, and page actions to the same Luna chat. Typed input while voice is active stays in that chat and is spoken automatically.
+- A deliberate typed request during an active delegated voice task replaces that task before Luna runs another host tool.
 - Ending voice leaves chat active. Chat-only use creates no Live session.
 - One `ClientToolRegistry` powers chat, speech, slides, forms, page actions, and WebMCP.
 

@@ -17,6 +17,8 @@ Host tool handlers receive an `AbortSignal`. A spoken correction aborts the olde
 
 Typed messages always use `client.sendMessage()`. If Live is connected, the completed Luna answer is also sent to Live for speech. Ending Live stops microphone/audio transport and leaves the chat session usable:
 
+Submitting a typed message while a delegated voice task is running cancels that task before the typed turn enters the same Luna queue. Speech backchannels remain within Live and do not call `sendMessage()`.
+
 ```ts
 await live.end()
 await client.sendMessage('Continue in text')

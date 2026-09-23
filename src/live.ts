@@ -589,6 +589,7 @@ export class ConvincedLiveController {
     } catch (cause) {
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
           delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
+      if (isCancelledTurn(cause)) return
       const error = cause instanceof Error ? cause : new Error(String(cause))
       this.events.emit('error', error)
       call(() => this.options.onError?.(error, delegation))
@@ -669,6 +670,10 @@ export class ConvincedLiveController {
     this.inputActive = false
     this.outputActive = false
   }
+}
+
+function isCancelledTurn(value: unknown): boolean {
+  return !!value && typeof value === 'object' && 'code' in value && value.code === 'turn_cancelled'
 }
 
 function validateDescriptor(descriptor: LiveSessionDescriptor): void {
