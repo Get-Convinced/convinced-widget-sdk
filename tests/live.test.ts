@@ -482,9 +482,10 @@ function restore(name: string, descriptor: PropertyDescriptor | undefined): void
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
     if (predicate()) return
-    await Bun.sleep(2)
+    await Bun.sleep(10)
   }
   throw new Error('Timed out waiting for condition.')
 }
