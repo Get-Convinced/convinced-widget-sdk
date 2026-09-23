@@ -617,13 +617,34 @@ function bounded(value: string, name: string, maxBytes: number): string {
 }
 
 function liveCommentary(value: string): string {
-  const faithful = stripMediaDirectives(value)
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+  const faithful = stripMarkdownLinks(stripMediaDirectives(value))
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   if (!faithful) throw new Error('backend speech result must not be empty.')
   return boundedWithMiddleOmission(faithful, MAX_LIVE_CONTEXT_BYTES)
+}
+
+function stripMarkdownLinks(value: string): string {
+  let result = ''
+  let cursor = 0
+  while (cursor < value.length) {
+    const opening = value.indexOf('[', cursor)
+    if (opening < 0) return result + value.slice(cursor)
+    const closingText = value.indexOf(']', opening + 1)
+    if (closingText < 0) return result + value.slice(cursor)
+    if (value[closingText + 1] !== '(') {
+      result += value.slice(cursor, closingText + 1)
+      cursor = closingText + 1
+      continue
+    }
+    const closingUrl = value.indexOf(')', closingText + 2)
+    if (closingUrl < 0) return result + value.slice(cursor)
+    const image = opening > 0 && value[opening - 1] === '!'
+    result += value.slice(cursor, image ? opening - 1 : opening)
+    if (!image) result += value.slice(opening + 1, closingText)
+    cursor = closingUrl + 1
+  }
+  return result
 }
 
 function stripMediaDirectives(value: string): string {
@@ -642,7 +663,8 @@ function stripMediaDirectives(value: string): string {
       continue
     }
     const closing = value.indexOf(']', opening + 7)
-    if (closing < 0 || closing === opening + 7) {
+    if (closing < 0) return result + value.slice(opening)
+    if (closing === opening + 7) {
       result += '['
       cursor = opening + 1
       continue
