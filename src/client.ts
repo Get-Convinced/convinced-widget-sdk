@@ -56,7 +56,7 @@ import {
 } from './types.js'
 
 export const DEFAULT_API_BASE = 'https://app.getconvinced.ai'
-const MAX_CLIENT_TOOL_ROUNDS = 4
+const MAX_CLIENT_TOOL_ROUNDS = 8
 type InternalSendMessageOptions = SendMessageOptions & {
   voiceTurn?: boolean
   discardOnAbort?: boolean
@@ -96,7 +96,7 @@ export interface ConvincedClientOptions {
   tools?: ClientToolRegistry | ClientTool[]
   /** Required to execute tools whose manifest consent is session or per_call. */
   authorizeToolCall?: ToolCallAuthorizer
-  /** May reduce, but never exceed, the protocol maximum of four continuation rounds. */
+  /** May reduce, but never exceed, the protocol maximum of eight continuation rounds. */
   maxClientToolRounds?: number
   defaultChatContext?: SendMessageOptions['context']
 }

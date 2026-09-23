@@ -245,7 +245,30 @@ describe('ConvincedClient transport', () => {
     }
   })
 
-  test('stops after the canonical maximum of four continuation rounds', async () => {
+  test('completes five legitimate host pauses within one turn', async () => {
+    let requestCount = 0
+    let executionCount = 0
+    const registry = new ClientToolRegistry([
+      tool('host_step', async () => ({ completed: ++executionCount })),
+    ])
+    const client = await sessionClient(async (_url, init) => {
+      requestCount += 1
+      const body = await requestBody(init)
+      if (requestCount === 6) return sse([{ delta: 'All five page steps are complete.' }])
+      const turnId = String(body.clientTurnId)
+      return sse([
+        toolCall(turnId, `call_${requestCount}`, 'host_step', {}),
+        { type: 'client_tool_pause', turnId, capability: `capability-${requestCount}` },
+      ])
+    }, registry)
+
+    const answer = await client.sendMessage('Walk through five page steps')
+    expect(answer.text).toBe('All five page steps are complete.')
+    expect(requestCount).toBe(6)
+    expect(executionCount).toBe(5)
+  })
+
+  test('stops after the canonical maximum of eight continuation rounds', async () => {
     let requestCount = 0
     let executionCount = 0
     const registry = new ClientToolRegistry([
@@ -267,8 +290,8 @@ describe('ConvincedClient transport', () => {
     await expect(client.sendMessage('Keep going')).rejects.toMatchObject({
       code: 'client_tool_round_limit',
     })
-    expect(requestCount).toBe(5)
-    expect(executionCount).toBe(4)
+    expect(requestCount).toBe(9)
+    expect(executionCount).toBe(8)
   })
 
   test('rejects a continuation round before executing more than 16 calls', async () => {
