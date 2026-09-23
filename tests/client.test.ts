@@ -268,7 +268,7 @@ describe('ConvincedClient transport', () => {
     expect(executionCount).toBe(5)
   })
 
-  test('stops after the canonical maximum of eight continuation rounds', async () => {
+  test('allows sixteen sequential host pauses within the model turn budget', async () => {
     let requestCount = 0
     let executionCount = 0
     const registry = new ClientToolRegistry([
@@ -280,6 +280,7 @@ describe('ConvincedClient transport', () => {
     const client = await sessionClient(async (_url, init) => {
       requestCount += 1
       const body = await requestBody(init)
+      if (requestCount === 17) return sse([{ delta: 'All sixteen steps are complete.' }])
       const turnId = String(body.clientTurnId)
       return sse([
         toolCall(turnId, `call_${requestCount}`, 'host_repeat_step', {}),
@@ -287,11 +288,10 @@ describe('ConvincedClient transport', () => {
       ])
     }, registry)
 
-    await expect(client.sendMessage('Keep going')).rejects.toMatchObject({
-      code: 'client_tool_round_limit',
-    })
-    expect(requestCount).toBe(9)
-    expect(executionCount).toBe(8)
+    const answer = await client.sendMessage('Keep going')
+    expect(answer.text).toBe('All sixteen steps are complete.')
+    expect(requestCount).toBe(17)
+    expect(executionCount).toBe(16)
   })
 
   test('rejects a continuation round before executing more than 16 calls', async () => {
