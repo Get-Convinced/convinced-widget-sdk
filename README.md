@@ -1,8 +1,8 @@
-# Convinced Widget SDK 0.1.3
+# Convinced Widget SDK 0.1.4
 
 A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, Luna conversation, knowledge, prompts, and OpenAI credentials.
 
-Version 0.1.3 uses one conversation for text and speech:
+Version 0.1.4 uses one conversation for text and speech:
 
 - `gpt-6-luna` produces the canonical answer, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
@@ -15,7 +15,7 @@ No OpenAI key or provider configuration belongs in browser code. A browser recei
 ## Install
 
 ```bash
-npm install --save-exact @convinced/widget-sdk@0.1.3
+npm install --save-exact @convinced/widget-sdk@0.1.4
 ```
 
 ## Headless quickstart

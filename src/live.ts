@@ -188,6 +188,12 @@ export class ConvincedLiveController {
   async end(): Promise<void> {
     const channel = this.channel
     if (!channel) {
+      // getUserMedia can still be waiting for permission. Invalidate that
+      // start now so a late grant cannot revive a session after End/Reset.
+      ++this.generation
+      this.abort.abort(new Error('Live session ended.'))
+      this.pendingStart = null
+      this.handledDelegations.clear()
       this.cleanup()
       if (this.stateValue.status !== 'idle') this.update({ status: 'disconnected', mode: null, muted: true })
       return
