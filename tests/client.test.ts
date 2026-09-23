@@ -34,6 +34,23 @@ describe('ConvincedClient transport', () => {
     expect(events).toEqual(['user:Hello', 'assistant:Hello from Convinced.'])
   })
 
+  test('keeps the backend voice briefing separate from visible chat text', async () => {
+    let body: JsonObject = {}
+    const client = await sessionClient(async (_url, init) => {
+      body = await requestBody(init)
+      return sse([
+        { type: 'voice_briefing', text: 'The dispatch view is open, with the workflow slide beside it.' },
+        { delta: '### Dispatch workflow\nDetailed written explanation. [SLIDE:dispatch.svg]' },
+      ])
+    })
+
+    const answer = await client.sendMessage('Show dispatch', { speak: false })
+    expect(body.voiceTurn).toBeUndefined()
+    expect(answer.voiceBriefing).toBe('The dispatch view is open, with the workflow slide beside it.')
+    expect(answer.text).toBe('### Dispatch workflow\nDetailed written explanation. [SLIDE:dispatch.svg]')
+    expect(client.state.messages.at(-1)?.text).not.toContain('voice_briefing')
+  })
+
   test('parses long malformed directives received over SSE within a fixed time bound', async () => {
     const malformedAssistantText = '[SLIDE:\\'.repeat(20_000)
     const client = await sessionClient(async () => sse([
@@ -387,6 +404,41 @@ describe('ConvincedClient transport', () => {
     await expect(client.sendMessage('Resume before expiry')).rejects.toMatchObject({
       code: 'client_tool_capability_expired',
     })
+  })
+
+  test('aborting a stalled host tool prevents later tools and a continuation request', async () => {
+    let toolStarted!: () => void
+    const started = new Promise<void>(resolve => { toolStarted = resolve })
+    let secondToolCalls = 0
+    const registry = new ClientToolRegistry([
+      tool('host_slow_read', async () => {
+        toolStarted()
+        return new Promise(() => undefined)
+      }),
+      tool('host_second_read', async () => {
+        secondToolCalls += 1
+        return { done: true }
+      }),
+    ])
+    let chatRequests = 0
+    const client = await sessionClient(async (_url, init) => {
+      chatRequests += 1
+      const body = await requestBody(init)
+      const turnId = String(body.clientTurnId)
+      return sse([
+        toolCall(turnId, 'call_slow', 'host_slow_read', {}),
+        toolCall(turnId, 'call_second', 'host_second_read', {}),
+        { type: 'client_tool_pause', turnId, capability: 'signed-capability' },
+      ])
+    }, registry)
+    const controller = new AbortController()
+    const turn = client.sendMessage('Old request', { signal: controller.signal, speak: false })
+    await started
+    controller.abort(new Error('Superseded by a correction.'))
+    await expect(turn).rejects.toMatchObject({ code: 'turn_cancelled' })
+    expect(chatRequests).toBe(1)
+    expect(secondToolCalls).toBe(0)
+    expect(client.state.messages.map(message => message.text)).toEqual(['Old request'])
   })
 
   test('cancelling a partially streamed turn rejects instead of completing it', async () => {

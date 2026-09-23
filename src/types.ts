@@ -507,6 +507,8 @@ export interface ChatMessage {
   text: string
   content: MessageContentPart[]
   createdAt: number
+  /** @internal Short verified text for Live speech, when the backend supplies it. */
+  voiceBriefing?: string
 }
 
 export type ClientStatus =
@@ -565,6 +567,11 @@ export interface SseDeltaEvent {
   delta: string
 }
 
+export interface SseVoiceBriefingEvent {
+  type: 'voice_briefing'
+  text: string
+}
+
 export interface SseActivityEvent {
   type: 'activity_start' | 'activity_step' | 'activity_complete'
   step?: ActivityStep
@@ -600,6 +607,7 @@ export interface SseErrorEvent {
 
 export type WidgetSseEvent =
   | SseDeltaEvent
+  | SseVoiceBriefingEvent
   | SseActivityEvent
   | SseProfileGateEvent
   | SseClientToolCallEvent
