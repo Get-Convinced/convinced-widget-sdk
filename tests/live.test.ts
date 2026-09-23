@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
-  ConvincedClient, ConvincedLiveController, type JsonObject,
+  ClientToolRegistry, ConvincedClient, ConvincedLiveController, HOST_TOOL_PROTOCOL_VERSION, type JsonObject,
 } from '../src'
 
 class FakeChannel {
@@ -262,6 +262,61 @@ describe('GPT Live WebRTC controller', () => {
       ],
     })
     expect(endBody).not.toHaveProperty('liveSessionIds')
+  })
+
+  test('a typed Live turn keeps its voice identity when voice ends during a host action', async () => {
+    installBrowser()
+    const bodies: JsonObject[] = []
+    let live!: ConvincedLiveController
+    const tools = new ClientToolRegistry([{
+      version: HOST_TOOL_PROTOCOL_VERSION,
+      name: 'host_read_costs',
+      description: 'Read the visible cost panel.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      locality: 'host', effect: 'read', consent: 'none', timeoutMs: 2_000,
+      handler: async () => {
+        await live.end()
+        return { panel: 'costs', visible: true }
+      },
+    }])
+    const client = new ConvincedClient({
+      orgSlug: 'demo', tools,
+      fetch: (async (input, init = {}) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({
+          sessionId: 'session_1', sessionCapability: 'cap_1',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+          return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          const body = JSON.parse(String(init.body)) as JsonObject
+          bodies.push(body)
+          if (body.resumeClientTurn === true) return sse('The cost panel is visible.')
+          const turnId = String(body.clientTurnId)
+          return sseEvents([
+            { type: 'client_tool_call', turnId, call: {
+              version: 1, id: 'costs_1', name: 'host_read_costs', args: {},
+              locality: 'host', effect: 'read', consent: 'none',
+            } },
+            { type: 'client_tool_pause', turnId, capability: 'signed-costs', expiresAt: Date.now() + 5_000 },
+          ])
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    live = client.createLiveController()
+    await live.start()
+    const answer = await client.sendMessage('Show costs')
+    expect(answer.text).toBe('The cost panel is visible.')
+    expect(live.state.status).toBe('disconnected')
+    expect(bodies.map(body => body.voiceTurn)).toEqual([true, true])
+    expect(bodies[1]?.clientToolResults).toEqual([expect.objectContaining({
+      callId: 'costs_1', name: 'host_read_costs', ok: true,
+    })])
   })
 
   test('does not speak a delegated answer after the Live generation ends', async () => {
@@ -610,6 +665,13 @@ function sseWithBriefing(text: string, briefing: string): Response {
   return new Response(
     `data: ${JSON.stringify({ type: 'voice_briefing', text: briefing })}\n\n` +
     `data: ${JSON.stringify({ delta: text })}\n\ndata: [DONE]\n\n`,
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  )
+}
+
+function sseEvents(events: JsonObject[]): Response {
+  return new Response(
+    `${events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`,
     { headers: { 'Content-Type': 'text/event-stream' } },
   )
 }

@@ -858,6 +858,10 @@ export class ConvincedClient {
     const clientTurnId = clientTools.length > 0 ? protocolTurnId() : null
     const seenClientToolCallIds = new Set<string>()
     let currentClientToolResults: ClientToolResult[] = []
+    // The backend binds this to the signed continuation. A voice disconnect
+    // during a host action must not change the identity of the same turn.
+    const voiceTurn = options.voiceTurn === true ||
+      (options.speak !== false && [...this.sessionLives].some(live => live.state.status === 'connected'))
 
     const controller = new AbortController()
     this.activeTurnController = controller
@@ -891,8 +895,7 @@ export class ConvincedClient {
           ...(options.context ?? {}),
           sessionId,
           message: trimmed,
-          voiceTurn: options.voiceTurn === true ||
-            (options.speak !== false && [...this.sessionLives].some(live => live.state.status === 'connected')) || undefined,
+          voiceTurn: voiceTurn || undefined,
           history,
           clientTools: clientTools.length > 0 ? clientTools : undefined,
           clientTurnId: clientTools.length > 0 ? clientTurnId : undefined,
