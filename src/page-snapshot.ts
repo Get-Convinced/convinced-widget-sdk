@@ -21,13 +21,37 @@ const MAX_SNAPSHOT_BYTES = 8 * 1024
 const EXCLUDED = 'form,input,select,option,textarea,[contenteditable],[data-private],[data-sensitive],[data-personalized],[data-visitor],[data-identity],[data-pii],[data-auth],[data-no-page-snapshot],[data-workforce-agent-rail],[data-enmo],[data-enmo-size],[aria-private="true"],[aria-live],[role="dialog"],[role="log"],dialog,script,style,noscript,template,svg,canvas,iframe,.ph-no-capture'
 const SEMANTIC = 'h1,h2,h3,p,li,article,section,a[href],[role="article"]'
 const encoder = new TextEncoder()
-const UNSAFE_TEXT = /\b(?:ignore (?:prior|previous|all) instructions|system prompt|developer message|api key|secret|credential)\b|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)/i
+const UNSAFE_TEXT = /\b(?:ignore (?:prior|previous|all) instructions|system prompt|developer message)\b|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)|\bsk-[A-Za-z0-9_-]{12,}\b|\bBearer\s+[A-Za-z0-9._~-]{20,}\b|\b(?:api[_-]?key|secret|credential|token)\s*[:=]\s*["']?[A-Za-z0-9_-]{12,}\b|\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/i
+
+function safePublicPath(pathname: string): boolean {
+  const segments = pathname.split('/').filter(Boolean)
+  if (segments.some((segment) => /^(?:auth|oauth|login|logout|sign-?in|sign-?up|reset(?:-password)?|password(?:-reset)?|forgot-password|invite|verify(?:-email)?|magic-link|session|account|profile)$/i.test(segment))) return false
+  return segments.every((segment) => {
+    let decoded: string
+    try { decoded = decodeURIComponent(segment) } catch { return false }
+    if (/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(decoded) ||
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decoded) ||
+        /^[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}$/.test(decoded) ||
+        /^[a-f0-9]{24,}$/i.test(decoded) ||
+        (decoded.length >= 24 && /^[A-Za-z0-9_-]+$/.test(decoded) && /[a-z]/i.test(decoded) && /\d/.test(decoded))) return false
+    return true
+  })
+}
+
+/** Only public route paths may enter a page observation or session URL. */
+function safePublicPageUrl(value: string | URL): string | undefined {
+  try {
+    const url = value instanceof URL ? value : new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        !safePublicPath(url.pathname)) return undefined
+    return `${url.origin}${url.pathname}`.slice(0, 2_048)
+  } catch { return undefined }
+}
 
 function safeUrl(value: string, base: string, origin: string): string | undefined {
   try {
     const url = new URL(value, base)
-    if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol)) return undefined
-    return `${url.origin}${url.pathname}`.slice(0, 2_048)
+    return url.origin === origin ? safePublicPageUrl(url) : undefined
   } catch { return undefined }
 }
 
@@ -125,6 +149,22 @@ function viewportFirst(elements: Element[], document: Document): Element[] {
     else other.push(element)
   }
   return [...current, ...other]
+}
+
+function actuallyVisible(element: Element, document: Document): boolean {
+  const view = document.defaultView
+  if (!view || !Number.isFinite(view.innerWidth) || !Number.isFinite(view.innerHeight) ||
+      view.innerWidth <= 0 || view.innerHeight <= 0 || !document.elementFromPoint) return false
+  const rect = element.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
+      rect.top >= view.innerHeight || rect.left >= view.innerWidth) return false
+  const left = Math.max(0, rect.left)
+  const right = Math.min(view.innerWidth, rect.right)
+  const top = Math.max(0, rect.top)
+  const bottom = Math.min(view.innerHeight, rect.bottom)
+  if (right <= left || bottom <= top) return false
+  const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
+  return Boolean(hit && (hit === element || element.contains(hit)))
 }
 
 /** Capture only the public main landmark; never read inputs or widget UI. */
@@ -226,7 +266,7 @@ export function createPageFocusTool(
     consent: 'none',
     timeoutMs: 2_000,
     constraints: { exactPublicSectionOnly: true, noFormInteraction: true },
-    handler: (args) => {
+    handler: async (args, context) => {
       if (boundPath && (typeof location === 'undefined' || pagePath(location.href) !== boundPath)) {
         throw new Error('Public section unavailable on the current page.')
       }
@@ -254,7 +294,28 @@ export function createPageFocusTool(
         if (target.style.outline === appliedOutline) target.style.outline = oldOutline
         if (target.style.outlineOffset === appliedOffset) target.style.outlineOffset = oldOffset
       }, 3_000)
-      return { scrollRequested: true, highlighted: true, title }
+      const hasLayout = Boolean(document.defaultView?.innerWidth && document.defaultView?.innerHeight && document.elementFromPoint)
+      if (!hasLayout) return { status: 'scroll_requested', scrollRequested: true, highlighted: true,
+        target_visible: false, presentation_confirmed: false, title }
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        if (context.signal.aborted || (boundPath && (typeof location === 'undefined' || pagePath(location.href) !== boundPath))) {
+          return { status: 'verification-failed', scrollRequested: true, highlighted: true,
+            target_visible: false, presentation_confirmed: false, title }
+        }
+        if (actuallyVisible(target, document)) {
+          const summaryElement = target.querySelector('p,li')
+          const isRendered = renderedChecker()
+          const summary = summaryElement && !isPageSnapshotExcluded(summaryElement, options.excludeSelectors ?? []) &&
+            isRendered(summaryElement) ? textOf(summaryElement, 220, options.excludeSelectors ?? [], isRendered) : ''
+          return { status: 'verified', scrollRequested: true, highlighted: true,
+            target_visible: true, presentation_confirmed: true, title,
+            ...(summary ? { visible_summary: summary } : {}),
+            visible_content: { title, ...(summary ? { summary } : {}) } }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 75))
+      }
+      return { status: 'verification-failed', scrollRequested: true, highlighted: true,
+        target_visible: false, presentation_confirmed: false, title }
     },
   }
 }
