@@ -315,8 +315,11 @@ export class ConvincedClient {
     }
     const previousSessionId = this.stateValue.session?.sessionId
     const sessionInput = sanitizeSessionInput(input)
+    const pageSnapshot = this.currentPageSnapshot()
     const sessionBody = JSON.stringify({
       ...sessionInput,
+      ...(pageSnapshot && (!sessionInput.pageUrl || sessionInput.pageUrl === pageSnapshot.url)
+        ? { pageSnapshot } : {}),
       ...(this.agentId ? { agentId: this.agentId } : {}),
       fingerprint: sessionInput.fingerprint || this.sessionFingerprint,
     })
@@ -806,10 +809,17 @@ export class ConvincedClient {
 
   private startPageObservation(live: ConvincedLiveController): void {
     this.stopPageObservation()
+    if (this.pageSnapshotOptions.enabled === false) return
     const update = () => {
       if (live.state.status !== 'connected') return
       const snapshot = this.currentPageSnapshot()
-      if (!snapshot) return
+      if (!snapshot) {
+        if (this.lastLivePageSnapshot && this.lastLivePageSnapshot !== 'unavailable') {
+          this.lastLivePageSnapshot = 'unavailable'
+          live.sendContextualUpdate('No public page snapshot is available on the current page. Earlier page evidence is stale.', 'current-host-page')
+        }
+        return
+      }
       const serialized = JSON.stringify(snapshot)
       if (serialized === this.lastLivePageSnapshot) return
       this.lastLivePageSnapshot = serialized
@@ -823,28 +833,38 @@ export class ConvincedClient {
     }
     this.pageObserver = new MutationObserver((records) => {
       const relevant = records.some((record) => {
-        if (record.type === 'attributes') return true
         const target = record.target.nodeType === 1
           ? record.target as Element
           : record.target.parentElement
+        if (record.type === 'attributes') {
+          const name = record.attributeName ?? ''
+          if (name === 'class' || name === 'hidden' || name === 'style' || name === 'aria-hidden' ||
+              name === 'aria-private' || name === 'aria-live' || name === 'contenteditable' ||
+              name === 'data-private' || name === 'data-sensitive' || name === 'data-personalized' ||
+              name === 'data-visitor' || name === 'data-identity' || name === 'data-pii' ||
+              name === 'data-auth' || name === 'data-no-page-snapshot' || name === 'data-enmo' ||
+              name === 'data-enmo-size' || name === 'data-workforce-agent-rail' ||
+              name.startsWith('data-convinced-')) return true
+        }
         return !target || !isPageSnapshotExcluded(target, this.pageSnapshotOptions.excludeSelectors ?? [])
       })
       if (relevant) schedule()
     })
     this.pageObserver.observe(document.documentElement, {
       childList: true, characterData: true, attributes: true, subtree: true,
-      attributeFilter: ['hidden', 'style', 'class', 'aria-hidden', 'aria-live', 'contenteditable',
-        'data-private', 'data-sensitive', 'data-no-page-snapshot', 'data-enmo', 'data-enmo-size',
-        'data-workforce-agent-rail'],
     })
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', schedule)
       window.addEventListener('hashchange', schedule)
+      window.addEventListener('scroll', schedule, { passive: true, capture: true })
+      window.addEventListener('resize', schedule, { passive: true })
     }
     this.pageObservationCleanup = () => {
       if (typeof window !== 'undefined') {
         window.removeEventListener('popstate', schedule)
         window.removeEventListener('hashchange', schedule)
+        window.removeEventListener('scroll', schedule, true)
+        window.removeEventListener('resize', schedule)
       }
     }
   }
@@ -980,9 +1000,10 @@ export class ConvincedClient {
     this.appendMessage(userMessage)
     this.appendMessage(assistantMessage, false)
     const clientTools = this.tools.definitions()
-    const pageFocusTool = typeof document !== 'undefined' && this.pageSnapshotOptions.enabled !== false &&
+    const pageFocusTool = typeof document !== 'undefined' && typeof location !== 'undefined' &&
+      this.pageSnapshotOptions.enabled !== false &&
       clientTools.length < MAX_HOST_TOOLS && !this.tools.has('host_focus_page_section')
-      ? createPageFocusTool(document, this.pageSnapshotOptions)
+      ? createPageFocusTool(document, this.pageSnapshotOptions, location.href)
       : null
     if (pageFocusTool) {
       const focusDefinition = { ...pageFocusTool } as Partial<ClientTool>

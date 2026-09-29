@@ -21,6 +21,7 @@ const MAX_SNAPSHOT_BYTES = 8 * 1024
 const EXCLUDED = 'form,input,select,option,textarea,[contenteditable],[data-private],[data-sensitive],[data-personalized],[data-visitor],[data-identity],[data-pii],[data-auth],[data-no-page-snapshot],[data-workforce-agent-rail],[data-enmo],[data-enmo-size],[aria-private="true"],[aria-live],[role="dialog"],[role="log"],dialog,script,style,noscript,template,svg,canvas,iframe,.ph-no-capture'
 const SEMANTIC = 'h1,h2,h3,p,li,article,section,a[href],[role="article"]'
 const encoder = new TextEncoder()
+const UNSAFE_TEXT = /\b(?:ignore (?:prior|previous|all) instructions|system prompt|developer message|api key|secret|credential)\b|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)/i
 
 function safeUrl(value: string, base: string, origin: string): string | undefined {
   try {
@@ -28,6 +29,13 @@ function safeUrl(value: string, base: string, origin: string): string | undefine
     if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol)) return undefined
     return `${url.origin}${url.pathname}`.slice(0, 2_048)
   } catch { return undefined }
+}
+
+function pagePath(value: string): string | null {
+  try {
+    const url = new URL(value)
+    return `${url.origin}${url.pathname}`
+  } catch { return null }
 }
 
 export function isPageSnapshotExcluded(element: Element, selectors: string[]): boolean {
@@ -98,7 +106,25 @@ function textOf(element: Element, limit: number, selectors: string[], isRendered
     }
   }
   walk(element)
-  return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, limit)
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, limit)
+  return UNSAFE_TEXT.test(text) ? '' : text
+}
+
+/** Prefer what the visitor is looking at; preserve DOM order when layout is unavailable. */
+function viewportFirst(elements: Element[], document: Document): Element[] {
+  const view = document.defaultView
+  if (!view || !Number.isFinite(view.innerWidth) || !Number.isFinite(view.innerHeight) ||
+      view.innerWidth <= 0 || view.innerHeight <= 0) return elements
+  const current: Element[] = []
+  const other: Element[] = []
+  for (const element of elements) {
+    const rect = element.getBoundingClientRect()
+    const inViewport = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+      rect.top < view.innerHeight && rect.left < view.innerWidth
+    if (inViewport) current.push(element)
+    else other.push(element)
+  }
+  return [...current, ...other]
 }
 
 /** Capture only the public main landmark; never read inputs or widget UI. */
@@ -116,16 +142,17 @@ export function capturePageSnapshot(
   const selectors = options.excludeSelectors ?? []
   const isRendered = renderedChecker()
   const usable = (element: Element) => !isPageSnapshotExcluded(element, selectors) && isRendered(element)
-  const title = document.title.replace(/\s+/g, ' ').trim().slice(0, 160)
-  const headings = [...main.querySelectorAll('h1,h2,h3')].filter(usable)
+  const publicHeading = [...main.querySelectorAll('h1')].find(usable)
+  const title = publicHeading ? textOf(publicHeading, 160, selectors, isRendered) : ''
+  const headings = viewportFirst([...main.querySelectorAll('h1,h2,h3')].filter(usable), document)
     .map((element) => textOf(element, 120, selectors, isRendered)).filter(Boolean).slice(0, 8)
-  const links = [...main.querySelectorAll('a[href]')].filter(usable)
+  const links = viewportFirst([...main.querySelectorAll('a[href]')].filter(usable), document)
     .flatMap((element) => {
       const href = safeUrl(element.getAttribute('href') ?? '', pageUrl, origin)
       const text = textOf(element, 120, selectors, isRendered)
       return href && text ? [{ text, href }] : []
     }).slice(0, 12)
-  const cards = [...main.querySelectorAll('article,[role="article"],button')].filter(usable)
+  const cards = viewportFirst([...main.querySelectorAll('article,[role="article"],button')].filter(usable), document)
     .flatMap((element) => {
       const cardTitle = element.querySelector('h2,h3,h4')
       const cardText = textOf(element, 280, selectors, isRendered)
@@ -137,7 +164,7 @@ export function capturePageSnapshot(
       const href = anchor && usable(anchor) ? safeUrl(anchor.getAttribute('href') ?? '', pageUrl, origin) : undefined
       return title ? [{ title, ...(cardText ? { text: cardText } : {}), ...(href ? { href } : {}) }] : []
     }).slice(0, 8)
-  const references = [...main.querySelectorAll('section[id]')].filter(usable)
+  const references = viewportFirst([...main.querySelectorAll('section[id]')].filter(usable), document)
     .flatMap((element) => {
       const heading = element.querySelector('h2,h3')
       if (!heading || !usable(heading)) return []
@@ -147,7 +174,7 @@ export function capturePageSnapshot(
     }).slice(0, 6)
   // Collect concise semantic passages instead of a raw main.textContent dump.
   const passages: string[] = []
-  for (const element of main.querySelectorAll(SEMANTIC)) {
+  for (const element of viewportFirst([...main.querySelectorAll(SEMANTIC)], document)) {
     if (!usable(element) || !element.matches('h1,h2,h3,p,li')) continue
     const passage = textOf(element, 280, selectors, isRendered)
     if (passage && !passages.includes(passage)) passages.push(passage)
@@ -181,7 +208,9 @@ export function pageSnapshotLiveContext(snapshot: PageSnapshot): string {
 export function createPageFocusTool(
   document: Document,
   options: PageSnapshotOptions = {},
+  pageUrl?: string,
 ): ClientTool {
+  const boundPath = pageUrl ? pagePath(pageUrl) : null
   return {
     version: HOST_TOOL_PROTOCOL_VERSION,
     name: 'host_focus_page_section',
@@ -198,6 +227,9 @@ export function createPageFocusTool(
     timeoutMs: 2_000,
     constraints: { exactPublicSectionOnly: true, noFormInteraction: true },
     handler: (args) => {
+      if (boundPath && (typeof location === 'undefined' || pagePath(location.href) !== boundPath)) {
+        throw new Error('Public section unavailable on the current page.')
+      }
       const title = typeof args.title === 'string' ? args.title.trim() : ''
       const main = document.querySelector('main,[role="main"]')
       if (!title || !main) throw new Error('Public section unavailable.')
@@ -216,11 +248,11 @@ export function createPageFocusTool(
       const oldOffset = target.style.outlineOffset
       target.style.outline = '3px solid #d75a36'
       target.style.outlineOffset = '4px'
+      const appliedOutline = target.style.outline
+      const appliedOffset = target.style.outlineOffset
       setTimeout(() => {
-        if (target.style.outline === '3px solid #d75a36') {
-          target.style.outline = oldOutline
-          target.style.outlineOffset = oldOffset
-        }
+        if (target.style.outline === appliedOutline) target.style.outline = oldOutline
+        if (target.style.outlineOffset === appliedOffset) target.style.outlineOffset = oldOffset
       }, 3_000)
       return { scrollRequested: true, highlighted: true, title }
     },
