@@ -34,6 +34,7 @@ export {
   type ConvincedLiveState,
   type LiveClientDelegation,
   type LiveClientDelegationResult,
+  type LiveDelegationProgress,
   type LiveBackendMessage,
   type LiveMessage,
   type LiveMode,

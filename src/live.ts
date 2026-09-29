@@ -71,6 +71,12 @@ export interface LiveClientDelegationResult {
   speech?: string
 }
 
+export interface LiveDelegationProgress {
+  kind: 'commentary' | 'thinking'
+  /** Coherent, verified public context or quiet progress; never hidden reasoning. */
+  text: string
+}
+
 export interface ConvincedLiveControllerOptions {
   descriptor: LiveSessionDescriptor
   /** Test hook. Production callers should use ConvincedClient.createLiveController(). */
@@ -88,6 +94,7 @@ export interface ConvincedLiveControllerOptions {
   onClientDelegation?: (
     delegation: LiveClientDelegation,
     signal: AbortSignal,
+    onProgress: (update: LiveDelegationProgress) => void,
   ) => LiveClientDelegationResult | Promise<LiveClientDelegationResult>
 }
 
@@ -108,6 +115,7 @@ type TranscriptBuffer = {
   endMs?: number
   timer: ReturnType<typeof setTimeout> | null
   backendSpeech?: boolean
+  nativeUserChunkCount?: number
 }
 type PendingDelegation = {
   delegation: LiveClientDelegation
@@ -117,6 +125,7 @@ type PendingDelegation = {
 type ServerEvent = {
   type?: unknown
   event_id?: unknown
+  client_event_id?: unknown
   delta?: unknown
   start_ms?: unknown
   end_ms?: unknown
@@ -131,6 +140,10 @@ type ServerEvent = {
 export class ConvincedLiveController {
   private readonly events = new TypedEventEmitter<ConvincedLiveControllerEventMap>()
   private readonly handledDelegations = new Set<string>()
+  private readonly transcriptEventIds = new Set<string>()
+  private readonly transcriptEventOrder: string[] = []
+  private lastMuteRequestId: string | null = null
+  private requestedMuted = false
   private readonly fetchImpl: typeof fetch
   private abort = new AbortController()
   private peer: RTCPeerConnection | null = null
@@ -146,7 +159,8 @@ export class ConvincedLiveController {
   private sessionStarted: (() => void) | null = null
   private sessionStartFailed: ((error: Error) => void) | null = null
   private sessionClosed: (() => void) | null = null
-  private readonly inputTranscriptSegments: string[] = []
+  /** Caller words for the next native exchange or delegation, independent of caption flushes. */
+  private readonly inputTurnChunks: string[] = []
   private readonly pendingDelegations: PendingDelegation[] = []
   private latestDelegationId: string | null = null
   private activeDelegation: AbortController | null = null
@@ -184,7 +198,11 @@ export class ConvincedLiveController {
     const generation = ++this.generation
     this.abort = new AbortController()
     this.handledDelegations.clear()
-    this.inputTranscriptSegments.length = 0
+    this.transcriptEventIds.clear()
+    this.transcriptEventOrder.length = 0
+    this.lastMuteRequestId = null
+    this.requestedMuted = context.startMuted === true
+    this.inputTurnChunks.length = 0
     this.pendingDelegations.length = 0
     this.latestDelegationId = null
     this.backendSpeechActive = false
@@ -231,10 +249,24 @@ export class ConvincedLiveController {
 
   setMuted(muted: boolean): void {
     if (!this.media || this.stateValue.status !== 'connected') throw new Error('Start the live session first.')
+    this.requestedMuted = muted
     for (const track of this.media.getAudioTracks()) track.enabled = !muted
+    // The visitor's mute intent is effective locally before the provider ACK.
+    // A late input transcript cannot be used as a new spoken request.
+    this.update({ muted })
+    if (muted) {
+      this.inputTurnChunks.length = 0
+      this.clearInputTranscript()
+      delete this.outputTranscript.nativeUserChunkCount
+      this.pendingDelegations.length = 0
+      if (this.delegationTimer) clearTimeout(this.delegationTimer)
+      this.delegationTimer = null
+    }
+    const eventId = id(muted ? 'mute' : 'unmute')
+    this.lastMuteRequestId = eventId
     this.send({
       type: muted ? 'session.input_audio.mute' : 'session.input_audio.unmute',
-      event_id: id(muted ? 'mute' : 'unmute'),
+      event_id: eventId,
     })
   }
 
@@ -407,14 +439,17 @@ export class ConvincedLiveController {
       return
     }
     if (type === 'session.input_audio.muted') {
-      this.update({ muted: true })
+      if (event.client_event_id !== this.lastMuteRequestId) return
+      if (this.requestedMuted) this.update({ muted: true })
       return
     }
     if (type === 'session.input_audio.unmuted') {
-      this.update({ muted: false })
+      if (event.client_event_id !== this.lastMuteRequestId) return
+      if (!this.requestedMuted) this.update({ muted: false })
       return
     }
     if (type === 'session.delegation.created' && event.delegation?.target === 'client') {
+      if (this.requestedMuted) return
       const delegationId = validId(event.delegation.id, 256)
       if (!delegationId || this.handledDelegations.has(delegationId)) return
       this.handledDelegations.add(delegationId)
@@ -436,6 +471,15 @@ export class ConvincedLiveController {
     if (type === 'session.input_transcript.delta' || type === 'session.output_transcript.delta') {
       const delta = typeof event.delta === 'string' ? event.delta : ''
       if (!delta) return
+      if (typeof event.event_id === 'string') {
+        if (this.transcriptEventIds.has(event.event_id)) return
+        this.transcriptEventIds.add(event.event_id)
+        this.transcriptEventOrder.push(event.event_id)
+        if (this.transcriptEventOrder.length > 4_096) {
+          this.transcriptEventIds.delete(this.transcriptEventOrder.shift()!)
+        }
+      }
+      if (type === 'session.input_transcript.delta' && this.requestedMuted) return
       this.appendTranscript(type === 'session.input_transcript.delta' ? 'user' : 'assistant', delta, event)
       return
     }
@@ -443,10 +487,11 @@ export class ConvincedLiveController {
 
   private appendTranscript(role: 'user' | 'assistant', delta: string, event: ServerEvent): void {
     const buffer = role === 'user' ? this.inputTranscript : this.outputTranscript
-    const other = role === 'user' ? this.outputTranscript : this.inputTranscript
-    if (other.text) this.flushTranscript(role === 'user' ? 'assistant' : 'user')
     const startMs = typeof event.start_ms === 'number' ? event.start_ms : undefined
     const endMs = typeof event.end_ms === 'number' ? event.end_ms : undefined
+    // Live is full duplex. A fragment from one speaker must not finish the
+    // other speaker's caption; their deltas can arrive interleaved.
+    if (role === 'assistant' && !buffer.text) buffer.nativeUserChunkCount = this.inputTurnChunks.length
     if (buffer.text && startMs !== undefined && buffer.endMs !== undefined && startMs - buffer.endMs > TRANSCRIPT_IDLE_MS) {
       this.flushTranscript(role)
     }
@@ -459,6 +504,7 @@ export class ConvincedLiveController {
       }
     }
     buffer.text += delta
+    if (role === 'user') this.inputTurnChunks.push(delta)
     if (!buffer.firstEventId && typeof event.event_id === 'string') buffer.firstEventId = event.event_id
     if (buffer.startMs === undefined && startMs !== undefined) buffer.startMs = startMs
     if (endMs !== undefined) buffer.endMs = endMs
@@ -493,11 +539,15 @@ export class ConvincedLiveController {
     else this.outputActive = false
     this.updateMode()
     if (text) {
-      if (role === 'user') this.inputTranscriptSegments.push(text)
-      if (role === 'assistant' && !buffer.backendSpeech) {
-        const priorUserSpeech = this.inputTranscriptSegments.join(' ').replace(/\s+/g, ' ').trim()
-        if (priorUserSpeech) call(() => this.options.onNativeExchange?.(priorUserSpeech, text))
-        this.inputTranscriptSegments.length = 0
+      const nativeChunkCount = buffer.nativeUserChunkCount ?? 0
+      const callerContinuedDuringReply = this.inputTurnChunks.length > nativeChunkCount
+      if (role === 'assistant' && !buffer.backendSpeech && !isBackchannel(text) &&
+          (!callerContinuedDuringReply || /\?\s*$/.test(text))) {
+        const priorUserSpeech = this.inputTurnChunks.slice(0, nativeChunkCount).join('').replace(/\s+/g, ' ').trim()
+        if (priorUserSpeech) {
+          call(() => this.options.onNativeExchange?.(priorUserSpeech, text))
+          this.inputTurnChunks.splice(0, nativeChunkCount)
+        }
       }
       const message: LiveMessage = {
         message: text,
@@ -515,6 +565,21 @@ export class ConvincedLiveController {
     delete buffer.startMs
     delete buffer.endMs
     delete buffer.backendSpeech
+    delete buffer.nativeUserChunkCount
+  }
+
+  private clearInputTranscript(): void {
+    const buffer = this.inputTranscript
+    if (buffer.timer) clearTimeout(buffer.timer)
+    buffer.timer = null
+    buffer.text = ''
+    delete buffer.firstEventId
+    delete buffer.startMs
+    delete buffer.endMs
+    this.inputActive = false
+    this.lastInputTranscriptAt = 0
+    this.inputTranscriptEndMs = undefined
+    this.updateMode()
   }
 
   private scheduleDelegation(generation: number): void {
@@ -526,17 +591,21 @@ export class ConvincedLiveController {
   }
 
   private claimPendingDelegation(generation: number): void {
-    if (generation !== this.generation || this.pendingDelegations.length === 0) return
+    if (generation !== this.generation || this.requestedMuted || this.pendingDelegations.length === 0) return
     const pending = this.pendingDelegations[0]!
     if (pending.generation !== generation) {
       this.pendingDelegations.shift()
       this.claimPendingDelegation(generation)
       return
     }
+    // A native reply immediately before a delegated follow-up belongs in the
+    // conversation history, not in the follow-up's caller transcript.
+    if (this.outputTranscript.text && !this.outputTranscript.backendSpeech) {
+      this.flushTranscript('assistant')
+    }
     const now = Date.now()
     const age = now - pending.receivedAt
-    const transcript = [...this.inputTranscriptSegments, this.inputTranscript.text]
-      .join(' ').replace(/\s+/g, ' ').trim()
+    const transcript = this.inputTurnChunks.join('').replace(/\s+/g, ' ').trim()
     if (!transcript) {
       if (age < DELEGATION_TRANSCRIPT_TIMEOUT_MS) {
         this.scheduleDelegation(generation)
@@ -559,7 +628,7 @@ export class ConvincedLiveController {
     }
     this.flushTranscript('user')
     this.pendingDelegations.shift()
-    this.inputTranscriptSegments.length = 0
+    this.inputTurnChunks.length = 0
     this.lastInputTranscriptAt = 0
     this.inputTranscriptEndMs = undefined
     void this.runClientDelegation({ ...pending.delegation, transcript }, generation)
@@ -573,9 +642,27 @@ export class ConvincedLiveController {
     if (delegation.delegationId !== this.latestDelegationId || generation !== this.generation) return
     const controller = new AbortController()
     this.activeDelegation = controller
+    const sentCommentary = new Set<string>()
     try {
       if (!this.options.onClientDelegation) throw new Error('Live client delegation is not configured.')
-      const result = await this.options.onClientDelegation(delegation, controller.signal)
+      const result = await this.options.onClientDelegation(delegation, controller.signal, (update) => {
+        if (generation !== this.generation || this.stateValue.status !== 'connected' ||
+            delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
+        if (update.kind === 'commentary') {
+          const content = liveCommentary(update.text)
+          if (sentCommentary.has(content)) return
+          this.sendBackendResult(content, delegation.delegationId)
+          sentCommentary.add(content)
+        } else if (update.kind === 'thinking') {
+          const content = bounded(update.text, 'delegation progress', MAX_LIVE_APPEND_BYTES)
+          this.send({
+            type: 'session.thinking.append',
+            event_id: id('thinking'),
+            delegation_id: delegation.delegationId,
+            content,
+          })
+        }
+      })
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
           delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
       const messageText = bounded(result.message, 'backend message', 64 * 1024)
@@ -585,7 +672,10 @@ export class ConvincedLiveController {
       }
       this.events.emit('backend_message', message)
       call(() => this.options.onBackendMessage?.(message))
-      this.sendBackendResult(result.speech ?? messageText, delegation.delegationId)
+      const finalCommentary = liveCommentary(result.speech ?? messageText)
+      // Completion is a distinct append even when its words match an interim
+      // finding. Otherwise the provider may never receive a final response.
+      this.sendBackendResult(finalCommentary, delegation.delegationId)
     } catch (cause) {
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
           delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
@@ -648,6 +738,12 @@ export class ConvincedLiveController {
     for (const buffer of [this.inputTranscript, this.outputTranscript]) {
       if (buffer.timer) clearTimeout(buffer.timer)
       buffer.timer = null
+      buffer.text = ''
+      delete buffer.firstEventId
+      delete buffer.startMs
+      delete buffer.endMs
+      delete buffer.backendSpeech
+      delete buffer.nativeUserChunkCount
     }
     if (this.delegationTimer) clearTimeout(this.delegationTimer)
     this.delegationTimer = null
@@ -657,7 +753,11 @@ export class ConvincedLiveController {
     this.backendSpeechUntil = 0
     this.lastInputTranscriptAt = 0
     this.inputTranscriptEndMs = undefined
-    this.inputTranscriptSegments.length = 0
+    this.inputTurnChunks.length = 0
+    this.transcriptEventIds.clear()
+    this.transcriptEventOrder.length = 0
+    this.lastMuteRequestId = null
+    this.requestedMuted = false
     const channel = this.channel
     const peer = this.peer
     const media = this.media
@@ -674,6 +774,10 @@ export class ConvincedLiveController {
 
 function isCancelledTurn(value: unknown): boolean {
   return !!value && typeof value === 'object' && 'code' in value && value.code === 'turn_cancelled'
+}
+
+function isBackchannel(value: string): boolean {
+  return /^(?:mm+[- ]?hmm+|m+h+m+|uh[- ]?huh|yeah|yes|right|okay|ok|sure|go on|i see)[.!?\s]*$/i.test(value.trim())
 }
 
 function validateDescriptor(descriptor: LiveSessionDescriptor): void {

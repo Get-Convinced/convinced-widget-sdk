@@ -13,6 +13,12 @@ Version 0.1.7 uses one conversation for text and speech:
 
 No OpenAI key or provider configuration belongs in browser code. A browser receives only public organization/deployment identifiers and a short-lived signed session capability.
 
+## Unreleased local worktree
+
+The local worktree contains changes beyond the published `0.1.7` package. No new SDK version has been published. During a delegated voice request, the SDK can pass short, verified backend findings to Live as they arrive, then send the final briefing after the chat stream completes. It also has a signed `client.describeScreen(imageDataUrl, { signal })` method for one visitor-approved JPEG or PNG frame. Live transcript captions accumulate independently by speaker during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately; a real acoustic retest is still needed to verify the reported muted-session interruption.
+
+The SDK still supports host-owned slides, forms, identity, and other registered actions. Each website chooses which capabilities to wire. See the [unreleased changelog](CHANGELOG.md), [screen observation guide](docs/screen-observation.md), and [speech ownership guide](docs/voice-session-ownership.md).
+
 ## Install
 
 ```bash

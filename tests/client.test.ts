@@ -17,6 +17,37 @@ const config = {
 }
 
 describe('ConvincedClient transport', () => {
+  test('screen observation uses the current signed session and keeps image bytes out of client state', async () => {
+    const imageDataUrl = `data:image/png;base64,${btoa('screen pixels')}`
+    let observedUrl = ''
+    let observedHeaders = new Headers()
+    let observedBody: JsonObject = {}
+    let observedSignal: AbortSignal | null | undefined
+    const fetchMock = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/session')) {
+        return Response.json({ sessionId: 'screen-session', sessionCapability: 'signed-screen-session', config })
+      }
+      observedUrl = url.pathname
+      observedHeaders = new Headers(init.headers)
+      observedBody = await requestBody(init)
+      observedSignal = init.signal
+      return Response.json({ observation: '  The dispatch panel is visible.  ' })
+    }) as typeof fetch
+    const client = new ConvincedClient({ orgSlug: 'demo', apiBase: 'https://mock.example', fetch: fetchMock })
+
+    await expect(client.describeScreen(imageDataUrl)).rejects.toMatchObject({ code: 'session_required' })
+    await client.createSession()
+    const abort = new AbortController()
+    expect(await client.describeScreen(imageDataUrl, { signal: abort.signal })).toEqual({ observation: 'The dispatch panel is visible.' })
+    expect(observedUrl).toBe('/api/widget/demo/session/screen-session/screen-context')
+    expect(observedHeaders.get('x-widget-session-capability')).toBe('signed-screen-session')
+    expect(observedBody).toEqual({ imageDataUrl })
+    expect(observedSignal).toBe(abort.signal)
+    expect(JSON.stringify(client.state)).not.toContain(imageDataUrl)
+    await expect(client.describeScreen('data:text/plain;base64,Zm9v')).rejects.toMatchObject({ code: 'invalid_screen_image' })
+  })
+
   test('ordinary chat omits the host bridge when no tools are registered', async () => {
     const bodies: JsonObject[] = []
     const client = await sessionClient(async (_url, init) => {
@@ -49,6 +80,22 @@ describe('ConvincedClient transport', () => {
     expect(answer.voiceBriefing).toBe('The dispatch view is open, with the workflow slide beside it.')
     expect(answer.text).toBe('### Dispatch workflow\nDetailed written explanation. [SLIDE:dispatch.svg]')
     expect(client.state.messages.at(-1)?.text).not.toContain('voice_briefing')
+  })
+
+  test('replaces provisional streamed text when the backend corrects its final answer', async () => {
+    const client = await sessionClient(async () => sse([
+      { delta: 'Opening the old workflow.' },
+      { type: 'text_reset' },
+      { delta: 'The supplier workflow is open.' },
+    ]))
+    const visible: string[] = []
+    client.on('message_delta', event => visible.push(event.text))
+
+    const answer = await client.sendMessage('Show supplier workflow')
+
+    expect(visible).toEqual(['Opening the old workflow.', '', 'The supplier workflow is open.'])
+    expect(answer.text).toBe('The supplier workflow is open.')
+    expect(client.state.messages.at(-1)?.text).toBe('The supplier workflow is open.')
   })
 
   test('parses long malformed directives received over SSE within a fixed time bound', async () => {

@@ -1,4 +1,4 @@
-import { ConvincedLiveController, type ConvincedLiveControllerOptions } from './live.js'
+import { ConvincedLiveController, type ConvincedLiveControllerOptions, type LiveDelegationProgress } from './live.js'
 import { parseAssistantContent } from './content.js'
 import { TypedEventEmitter } from './events.js'
 import { ClientToolRegistry } from './tools/registry.js'
@@ -60,7 +60,9 @@ const MAX_CLIENT_TOOL_ROUNDS = 16
 type InternalSendMessageOptions = SendMessageOptions & {
   voiceTurn?: boolean
   discardOnAbort?: boolean
+  onProgress?: (update: LiveDelegationProgress) => void
 }
+const MAX_VOICE_UPDATE_BYTES = 450
 export const MAX_WIDGET_CHAT_REQUEST_BYTES = 256 * 1024
 export const MAX_WIDGET_CHAT_MESSAGE_BYTES = 8 * 1024
 export const MAX_WIDGET_CHAT_HISTORY_MESSAGES = 20
@@ -647,6 +649,42 @@ export class ConvincedClient {
     )
   }
 
+  /** Describe one visitor-approved screen frame without retaining the image in client state. */
+  async describeScreen(
+    imageDataUrl: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ observation: string }> {
+    this.assertUsable()
+    const sessionId = this.requireSessionId()
+    if (this.endSessionId === sessionId) {
+      throw new ConvincedSdkError('session_ended', 'Renew the session before observing the screen.')
+    }
+    const encodedImage = typeof imageDataUrl === 'string' && imageDataUrl.length <= 1_400_000
+      ? /^data:image\/(?:jpeg|png);base64,([A-Za-z0-9+/]+={0,2})$/.exec(imageDataUrl)?.[1]
+      : undefined
+    const imageBytes = encodedImage && encodedImage.length % 4 === 0
+      ? encodedImage.length / 4 * 3 - (encodedImage.endsWith('==') ? 2 : encodedImage.endsWith('=') ? 1 : 0)
+      : 0
+    if (!imageBytes || imageBytes > 1024 * 1024) {
+      throw new ConvincedSdkError('invalid_screen_image', 'Provide a JPEG or PNG data URL under 1 MiB.')
+    }
+    const result = await readJsonResponse<{ observation?: unknown }>(
+      await this.request(
+        `/api/widget/${encodeURIComponent(this.orgSlug)}/session/${encodeURIComponent(sessionId)}/screen-context`,
+        {
+          method: 'POST',
+          headers: this.sessionWriteHeaders(),
+          body: JSON.stringify({ imageDataUrl }),
+          ...(options.signal ? { signal: options.signal } : {}),
+        },
+      ),
+    )
+    if (typeof result.observation !== 'string' || !result.observation.trim()) {
+      throw new ConvincedSdkError('invalid_screen_observation', 'The screen observation response was empty.')
+    }
+    return { observation: result.observation.trim() }
+  }
+
   async markVoiceUpgrade(
     pillsMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [],
   ): Promise<void> {
@@ -705,7 +743,7 @@ export class ConvincedClient {
         this.appendMessage(createMessage('user', user.slice(0, 1024)), false)
         this.appendMessage(createMessage('assistant', assistant.slice(0, 1024)), false)
       },
-      onClientDelegation: async ({ transcript }, signal) => {
+      onClientDelegation: async ({ transcript }, signal, onProgress) => {
         const delegatedSessionId = boundSessionId
         if (!delegatedSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
           throw new ConvincedSdkError('live_session_changed', 'The Live session no longer owns this conversation.')
@@ -721,6 +759,12 @@ export class ConvincedClient {
             voiceTurn: true,
             discardOnAbort: true,
             signal: controller.signal,
+            onProgress: (update) => {
+              if (controller.signal.aborted ||
+                  delegatedSessionId !== boundSessionId ||
+                  delegatedSessionId !== this.stateValue.session?.sessionId) return
+              onProgress(update)
+            },
           })
           if (delegatedSessionId !== boundSessionId || delegatedSessionId !== this.stateValue.session?.sessionId) {
             throw new ConvincedSdkError('live_session_changed', 'The Live session changed before Luna answered.')
@@ -950,9 +994,26 @@ export class ConvincedClient {
           }
           if (event.type === 'voice_briefing') {
             if (typeof event.text === 'string' && event.text.trim() &&
-                new TextEncoder().encode(event.text.trim()).byteLength <= 450) {
+                new TextEncoder().encode(event.text.trim()).byteLength <= MAX_VOICE_UPDATE_BYTES) {
               voiceBriefing = event.text.trim()
             }
+            continue
+          }
+          if (event.type === 'voice_context' || event.type === 'voice_thinking') {
+            const text = typeof event.text === 'string' ? event.text.trim() : ''
+            if (voiceTurn && options.onProgress && text && !controller.signal.aborted &&
+                new TextEncoder().encode(text).byteLength <= MAX_VOICE_UPDATE_BYTES) {
+              options.onProgress({
+                kind: event.type === 'voice_context' ? 'commentary' : 'thinking',
+                text,
+              })
+            }
+            continue
+          }
+          if (event.type === 'text_reset') {
+            fullText = ''
+            this.updateAssistant(assistantMessage.id, '')
+            this.events.emit('message_delta', { messageId: assistantMessage.id, delta: '', text: '' })
             continue
           }
           if (typeof (event as { delta?: unknown }).delta === 'string') {

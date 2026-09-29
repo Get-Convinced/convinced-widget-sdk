@@ -30,9 +30,11 @@
     "examples/vanilla",
     "AGENT_BUILD_PROMPT.txt",
     "README.md",
+    "CHANGELOG.md",
     "docs/webmcp-handoff.md",
     "docs/agent-prompt-management.md",
     "docs/voice-session-ownership.md",
+    "docs/screen-observation.md",
     "LICENSE"
   ],
   "sideEffects": false,
