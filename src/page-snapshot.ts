@@ -24,6 +24,9 @@ const encoder = new TextEncoder()
 const UNSAFE_TEXT = /\b(?:ignore (?:prior|previous|all) instructions|system prompt|developer message)\b|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)|\bsk-[A-Za-z0-9_-]{12,}\b|\bBearer\s+[A-Za-z0-9._~-]{20,}\b|\b(?:api[_-]?key|secret|credential|token)\s*[:=]\s*["']?[A-Za-z0-9_-]{12,}\b|\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/i
 
 function safePublicPath(pathname: string): boolean {
+  // Encoded separators (including a second encoded layer) cannot hide a
+  // private route name inside what looks like one harmless segment.
+  if (/%(?:2f|5c|25)/i.test(pathname)) return false
   const segments = pathname.split('/').filter(Boolean)
   if (segments.some((segment) => /^(?:auth|oauth|login|logout|sign-?in|sign-?up|reset(?:-password)?|password(?:-reset)?|forgot-password|invite|verify(?:-email)?|magic-link|session|account|profile)$/i.test(segment))) return false
   return segments.every((segment) => {
