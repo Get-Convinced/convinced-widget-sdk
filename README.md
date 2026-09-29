@@ -19,6 +19,8 @@ The local worktree contains changes beyond the published `0.1.7` package. No new
 
 The SDK still supports host-owned slides, forms, identity, and other registered actions. Each website chooses which capabilities to wire. See the [unreleased changelog](CHANGELOG.md), [screen observation guide](docs/screen-observation.md), and [speech ownership guide](docs/voice-session-ownership.md).
 
+In browsers, the unreleased SDK also captures a bounded public snapshot of the current `<main>` for each chat turn and sends updates to Live when that page changes. It includes the title, headings, semantic cards, links, section references, and compact public text. Forms, editors, dialogs, widget UI, hidden and marked private content are excluded. Add site-specific UI roots with `pageSnapshot: { excludeSelectors: ['#your-agent-rail'] }`, or disable automatic capture with `pageSnapshot: { enabled: false }`. Page content is untrusted data; it cannot grant tool access or change agent instructions. When the tool registry has room, the SDK offers `host_focus_page_section` for scrolling to and briefly highlighting an exact public section title. Registered site actions always retain their slots.
+
 ## Install
 
 ```bash

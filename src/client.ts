@@ -1,5 +1,6 @@
 import { ConvincedLiveController, type ConvincedLiveControllerOptions, type LiveDelegationProgress } from './live.js'
 import { parseAssistantContent } from './content.js'
+import { capturePageSnapshot, createPageFocusTool, isPageSnapshotExcluded, pageSnapshotLiveContext, type PageSnapshotOptions } from './page-snapshot.js'
 import { TypedEventEmitter } from './events.js'
 import { ClientToolRegistry } from './tools/registry.js'
 import {
@@ -19,6 +20,7 @@ import {
   HOST_TOOL_PROTOCOL_VERSION,
   MAX_HOST_TOOL_CALLS_PER_TURN,
   MAX_HOST_TOOLS,
+  MAX_HOST_TOOL_MANIFEST_BYTES,
   type ChatHistoryMessage,
   type ChatMessage,
   type BrowserSessionInputOptions,
@@ -101,6 +103,8 @@ export interface ConvincedClientOptions {
   /** May reduce, but never exceed, the protocol maximum of sixteen continuation rounds. */
   maxClientToolRounds?: number
   defaultChatContext?: SendMessageOptions['context']
+  /** Public semantic host-page grounding. Enabled by default in browsers. */
+  pageSnapshot?: PageSnapshotOptions
 }
 
 export interface PublishClientToolsToWebMcpOptions {
@@ -138,6 +142,10 @@ export class ConvincedClient {
   private readonly authorizeToolCall?: ToolCallAuthorizer
   private readonly maxClientToolRounds: number
   private readonly defaultChatContext: SendMessageOptions['context']
+  private readonly pageSnapshotOptions: PageSnapshotOptions
+  private pageObserver: MutationObserver | null = null
+  private pageObserverTimer: ReturnType<typeof setTimeout> | null = null
+  private lastLivePageSnapshot = ''
   private readonly sessionToolConsent = new Set<ClientTool>()
   private readonly behaviorEvents: WidgetBehaviorEvent[] = []
   private readonly sessionLives = new Set<ConvincedLiveController>()
@@ -191,6 +199,7 @@ export class ConvincedClient {
       Math.max(0, Math.floor(options.maxClientToolRounds ?? MAX_CLIENT_TOOL_ROUNDS)),
     )
     this.defaultChatContext = options.defaultChatContext ?? {}
+    this.pageSnapshotOptions = options.pageSnapshot ?? {}
   }
 
   get state(): ConvincedClientState {
@@ -720,10 +729,19 @@ export class ConvincedClient {
         },
         headers: () => Object.fromEntries(this.sessionWriteHeaders()),
       },
-      ...(options.onStatusChange ? { onStatusChange: options.onStatusChange } : {}),
+      onStatusChange: (state) => {
+        if (state.status === 'disconnected' || state.status === 'error') this.stopPageObservation()
+        options.onStatusChange?.(state)
+      },
       ...(options.onModeChange ? { onModeChange: options.onModeChange } : {}),
-      ...(options.onConnect ? { onConnect: options.onConnect } : {}),
-      ...(options.onDisconnect ? { onDisconnect: options.onDisconnect } : {}),
+      onConnect: (id) => {
+        this.startPageObservation(controller)
+        options.onConnect?.(id)
+      },
+      onDisconnect: () => {
+        this.stopPageObservation()
+        options.onDisconnect?.()
+      },
       ...(options.onError ? { onError: options.onError } : {}),
       onLiveSessionId: (id) => {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
@@ -778,6 +796,69 @@ export class ConvincedClient {
     })
     this.sessionLives.add(controller)
     return controller
+  }
+
+  private currentPageSnapshot() {
+    if (typeof document === 'undefined' || typeof location === 'undefined') return null
+    try { return capturePageSnapshot(document, location.href, this.pageSnapshotOptions) }
+    catch { return null }
+  }
+
+  private startPageObservation(live: ConvincedLiveController): void {
+    this.stopPageObservation()
+    const update = () => {
+      if (live.state.status !== 'connected') return
+      const snapshot = this.currentPageSnapshot()
+      if (!snapshot) return
+      const serialized = JSON.stringify(snapshot)
+      if (serialized === this.lastLivePageSnapshot) return
+      this.lastLivePageSnapshot = serialized
+      live.sendContextualUpdate(pageSnapshotLiveContext(snapshot), 'current-host-page')
+    }
+    update()
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+    const schedule = () => {
+      if (this.pageObserverTimer) clearTimeout(this.pageObserverTimer)
+      this.pageObserverTimer = setTimeout(update, 250)
+    }
+    this.pageObserver = new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.type === 'attributes') return true
+        const target = record.target.nodeType === 1
+          ? record.target as Element
+          : record.target.parentElement
+        return !target || !isPageSnapshotExcluded(target, this.pageSnapshotOptions.excludeSelectors ?? [])
+      })
+      if (relevant) schedule()
+    })
+    this.pageObserver.observe(document.documentElement, {
+      childList: true, characterData: true, attributes: true, subtree: true,
+      attributeFilter: ['hidden', 'style', 'class', 'aria-hidden', 'aria-live', 'contenteditable',
+        'data-private', 'data-sensitive', 'data-no-page-snapshot', 'data-enmo', 'data-enmo-size',
+        'data-workforce-agent-rail'],
+    })
+    if (typeof window !== 'undefined') {
+      window.addEventListener('popstate', schedule)
+      window.addEventListener('hashchange', schedule)
+    }
+    this.pageObservationCleanup = () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('popstate', schedule)
+        window.removeEventListener('hashchange', schedule)
+      }
+    }
+  }
+
+  private pageObservationCleanup: (() => void) | null = null
+
+  private stopPageObservation(): void {
+    this.pageObserver?.disconnect()
+    this.pageObserver = null
+    if (this.pageObserverTimer) clearTimeout(this.pageObserverTimer)
+    this.pageObserverTimer = null
+    this.pageObservationCleanup?.()
+    this.pageObservationCleanup = null
+    this.lastLivePageSnapshot = ''
   }
 
   private liveSessionUrl(sessionId: string): string {
@@ -899,6 +980,21 @@ export class ConvincedClient {
     this.appendMessage(userMessage)
     this.appendMessage(assistantMessage, false)
     const clientTools = this.tools.definitions()
+    const pageFocusTool = typeof document !== 'undefined' && this.pageSnapshotOptions.enabled !== false &&
+      clientTools.length < MAX_HOST_TOOLS && !this.tools.has('host_focus_page_section')
+      ? createPageFocusTool(document, this.pageSnapshotOptions)
+      : null
+    if (pageFocusTool) {
+      const focusDefinition = { ...pageFocusTool } as Partial<ClientTool>
+      delete focusDefinition.handler
+      const candidate = [...clientTools, focusDefinition as ClientToolDefinition]
+      if (new TextEncoder().encode(JSON.stringify(candidate)).byteLength <= MAX_HOST_TOOL_MANIFEST_BYTES) {
+        clientTools.push(focusDefinition as ClientToolDefinition)
+      }
+    }
+    const pageFocusRegistry = pageFocusTool && clientTools.some((tool) => tool.name === pageFocusTool.name)
+      ? new ClientToolRegistry([pageFocusTool])
+      : null
     const clientTurnId = clientTools.length > 0 ? protocolTurnId() : null
     const seenClientToolCallIds = new Set<string>()
     let currentClientToolResults: ClientToolResult[] = []
@@ -933,12 +1029,14 @@ export class ConvincedClient {
       while (true) {
         voiceBriefing = undefined
         throwIfAborted(controller.signal)
+        const pageSnapshot = this.currentPageSnapshot()
         const body = {
           ...sessionChatContext(this.stateValue),
           ...this.defaultChatContext,
           ...(options.context ?? {}),
           sessionId,
           message: trimmed,
+          ...(pageSnapshot ? { pageSnapshot } : {}),
           // Opt in to provisional public deltas plus text_reset. Published
           // 0.1.7 clients omit this field and cannot safely consume resets.
           streamProtocol: 1,
@@ -1109,6 +1207,7 @@ export class ConvincedClient {
               pause.turnId,
               continuationRounds,
               capabilityExecution.signal,
+              pageFocusRegistry,
             )
             throwIfAborted(capabilityExecution.signal)
             results.push(result)
@@ -1195,6 +1294,7 @@ export class ConvincedClient {
   destroy(): void {
     if (this.stateValue.status === 'destroyed') return
     this.cancelActiveTurn('Client destroyed.')
+    this.stopPageObservation()
     for (const live of this.sessionLives) void live.end().catch(() => undefined)
     this.sessionLives.clear()
     this.liveEventIds.clear()
@@ -1212,8 +1312,10 @@ export class ConvincedClient {
     turnId: string,
     round: number,
     signal: AbortSignal,
+    pageFocusRegistry: ClientToolRegistry | null = null,
   ): Promise<ClientToolResult> {
-    const tool = this.tools.get(call.name)
+    const registry = pageFocusRegistry?.has(call.name) ? pageFocusRegistry : this.tools
+    const tool = registry.get(call.name)
     if (tool && !(await this.isToolCallAuthorized(call, tool, round, signal))) {
       return {
         version: HOST_TOOL_PROTOCOL_VERSION,
@@ -1228,7 +1330,7 @@ export class ConvincedClient {
         durationMs: 0,
       }
     }
-    return this.tools.execute(call, {
+    return registry.execute(call, {
       orgSlug: this.orgSlug,
       sessionId: this.stateValue.session?.sessionId ?? null,
       turnId,
