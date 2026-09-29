@@ -190,6 +190,7 @@ describe('ConvincedClient transport', () => {
         message: 'forged-default',
         resumeClientTurn: true,
         clientToolCapability: 'forged-default',
+        streamProtocol: 999,
       },
     })
     await client.createSession()
@@ -203,12 +204,14 @@ describe('ConvincedClient transport', () => {
         clientTools: [{ forged: true }],
         clientTurnId: 'forged-call',
         clientToolResults: [{ forged: true }],
+        streamProtocol: 999,
       },
     })
 
     expect(body).toMatchObject({
       sessionId: 'session_canonical',
       message: 'Real message',
+      streamProtocol: 1,
       history: [{ role: 'user', content: 'Real history' }],
     })
     expect(body).not.toHaveProperty('clientTools')

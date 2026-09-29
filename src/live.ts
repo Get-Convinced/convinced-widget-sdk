@@ -541,8 +541,10 @@ export class ConvincedLiveController {
     if (text) {
       const nativeChunkCount = buffer.nativeUserChunkCount ?? 0
       const callerContinuedDuringReply = this.inputTurnChunks.length > nativeChunkCount
+      // If the caller kept speaking during this reply, Live may simply have
+      // interjected. Keep every caller chunk for the delegated request.
       if (role === 'assistant' && !buffer.backendSpeech && !isBackchannel(text) &&
-          (!callerContinuedDuringReply || /\?\s*$/.test(text))) {
+          !callerContinuedDuringReply) {
         const priorUserSpeech = this.inputTurnChunks.slice(0, nativeChunkCount).join('').replace(/\s+/g, ' ').trim()
         if (priorUserSpeech) {
           call(() => this.options.onNativeExchange?.(priorUserSpeech, text))
@@ -648,8 +650,11 @@ export class ConvincedLiveController {
       const result = await this.options.onClientDelegation(delegation, controller.signal, (update) => {
         if (generation !== this.generation || this.stateValue.status !== 'connected' ||
             delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
+        if (typeof update.text !== 'string' || !update.text.trim() ||
+            new TextEncoder().encode(update.text).byteLength > MAX_LIVE_APPEND_BYTES) return
         if (update.kind === 'commentary') {
-          const content = liveCommentary(update.text)
+          let content: string
+          try { content = liveCommentary(update.text) } catch { return }
           if (sentCommentary.has(content)) return
           this.sendBackendResult(content, delegation.delegationId)
           sentCommentary.add(content)

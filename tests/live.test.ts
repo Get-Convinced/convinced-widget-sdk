@@ -428,6 +428,31 @@ describe('GPT Live WebRTC controller', () => {
     }))
   })
 
+  test('ignores oversized quiet progress without failing the delegated final answer', async () => {
+    installBrowser()
+    const errors: Error[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onError: error => errors.push(error),
+      onClientDelegation: (_delegation, _signal, onProgress) => {
+        onProgress({ kind: 'thinking', text: 'Checking '.repeat(100) })
+        return { message: 'The supplier workflow is visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show supplier.', end_ms: 100 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 100,
+      delegation: { id: 'large-progress', target: 'client' } })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append'))
+    expect(errors).toEqual([])
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({ type: 'session.thinking.append' }))
+    await controller.end()
+  })
+
   test('passes Live-native clarification to Luna with the next delegated request', async () => {
     installBrowser()
     const chatBodies: JsonObject[] = []
@@ -458,6 +483,7 @@ describe('GPT Live WebRTC controller', () => {
     await live.start()
     peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Help me understand this.' })
     peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Which workflow should we look at?' })
+    await waitFor(() => client.state.messages.some(message => message.text === 'Which workflow should we look at?'))
     peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Dispatch planning.' })
     peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'clarification_1', target: 'client' } })
 
@@ -792,6 +818,34 @@ describe('GPT Live WebRTC controller', () => {
       delegation: { id: 'supplier', target: 'client' } })
     await waitFor(() => delegated.length === 1)
     expect(delegated).toEqual(['Supplier workflows available on this page'])
+    await controller.end()
+  })
+
+  test('keeps a caller prefix when a substantive assistant question overlaps the same request', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user) => nativeExchanges.push(user),
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Supplier ', end_ms: 100 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Which workflow?', end_ms: 200 })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'workflows are available here?', end_ms: 500 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 500,
+      delegation: { id: 'supplier-question', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Supplier workflows are available here?'])
+    expect(nativeExchanges).toEqual([])
     await controller.end()
   })
 

@@ -939,6 +939,9 @@ export class ConvincedClient {
           ...(options.context ?? {}),
           sessionId,
           message: trimmed,
+          // Opt in to provisional public deltas plus text_reset. Published
+          // 0.1.7 clients omit this field and cannot safely consume resets.
+          streamProtocol: 1,
           voiceTurn: voiceTurn || undefined,
           history,
           clientTools: clientTools.length > 0 ? clientTools : undefined,
