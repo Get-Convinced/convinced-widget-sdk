@@ -1,13 +1,13 @@
 # Convinced Widget SDK 0.1.7
 
-A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, Luna conversation, knowledge, prompts, and OpenAI credentials.
+A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, server-agent conversation, knowledge, prompts, and provider credentials.
 
 Version 0.1.7 uses one conversation for text and speech:
 
-- `gpt-6-luna` produces grounded answers, Markdown, media directives, and tool decisions.
+- The Convinced server agent produces grounded answers, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
-- Live handles brief conversational replies and delegates organization facts, reasoning, and page actions to the same Luna chat. Typed input while voice is active stays in that chat and is spoken automatically.
-- A deliberate typed request during an active delegated voice task replaces that task before Luna runs another host tool.
+- Live handles brief conversational replies and delegates organization facts, reasoning, and page actions to the same backend conversation. Typed input while voice is active stays in that conversation and is spoken automatically.
+- A deliberate typed request during an active delegated voice task replaces that task before the server agent runs another host tool.
 - Ending voice leaves chat active. Chat-only use creates no Live session.
 - One `ClientToolRegistry` powers chat, speech, slides, forms, page actions, and WebMCP.
 
@@ -15,7 +15,7 @@ No OpenAI key or provider configuration belongs in browser code. A browser recei
 
 ## Unreleased local worktree
 
-The local worktree contains changes beyond the published `0.1.7` package. No new SDK version has been published. During a delegated voice request, the SDK can pass short, verified backend findings to Live as they arrive, then send the final briefing after the chat stream completes. It also has a signed `client.describeScreen(imageDataUrl, { signal })` method for one visitor-approved JPEG or PNG frame. Live transcript captions accumulate independently by speaker during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately; a real acoustic retest is still needed to verify the reported muted-session interruption.
+The local worktree contains changes beyond the published `0.1.7` package. No new SDK version has been published, and the published package remains unchanged. For the unreleased backend configuration paired with this work, the server-agent default is GPT-6.1 Sol with low reasoning; model selection stays on the server. `gpt-live-1` remains the optional voice layer. During a delegated voice request, the SDK can pass short, verified backend findings to Live as they arrive, then send the final briefing after the chat stream completes. It also has a signed `client.describeScreen(imageDataUrl, { signal })` method for one visitor-approved JPEG or PNG frame. Live transcript captions accumulate independently by speaker during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately; a real acoustic retest is still needed to verify the reported muted-session interruption.
 
 The SDK still supports host-owned slides, forms, identity, and other registered actions. Each website chooses which capabilities to wire. See the [unreleased changelog](CHANGELOG.md), [screen observation guide](docs/screen-observation.md), and [speech ownership guide](docs/voice-session-ownership.md).
 
@@ -81,10 +81,10 @@ live.setMuted(true)
 live.setMuted(false)
 live.sendContextualUpdate('The visitor opened the ROI section.', 'roi-section')
 
-// Typed input still goes through Luna and is spoken while Live is connected.
+// Typed input still goes through the server agent and is spoken while Live is connected.
 await client.sendMessage('Compare the two plans')
 
-// Voice off; the Luna chat remains active.
+// Voice off; the backend conversation remains active.
 await live.end()
 await client.sendMessage('Send me the implementation steps')
 
@@ -92,7 +92,7 @@ await client.sendMessage('Send me the implementation steps')
 await client.endSession({ slidesViewed: ['roi-overview.png'] })
 ```
 
-The browser sends its SDP offer to the Convinced backend. The backend creates `gpt-live-1` with client delegation. Live can answer short conversational turns directly. The SDK records those completed exchanges in the shared session history, so typed and delegated follow-ups retain their context. When Live delegates, the SDK sends the current utterance through Luna chat. Luna produces the canonical rich answer and runs the shared tool registry through the signed chat continuation. A short, verified voice briefing goes to Live for natural speech. A newer delegation cancels the older chat and tool work before starting the correction.
+The browser sends its SDP offer to the Convinced backend. The backend creates `gpt-live-1` with client delegation. Live can answer short conversational turns directly. The SDK records those completed exchanges in the shared session history, so typed and delegated follow-ups retain their context. When Live delegates, the SDK sends the current utterance through the backend conversation. The server agent produces the canonical rich answer and runs the shared tool registry through the signed chat continuation. A short, verified voice briefing goes to Live for natural speech. A newer delegation cancels the older chat and tool work before starting the correction.
 
 If the backend cannot supply a voice briefing, Live receives one complete sentence from the written answer, or a short invitation to explore the details in chat. Page context can still be up to 8 KiB; the SDK sends it in small ordered updates that fit the Live append limit.
 
@@ -124,7 +124,7 @@ tools.register({
 })
 ```
 
-For chat, the backend signs the exact Luna tool call, pauses the turn, and accepts only the matching result before resuming. For speech, the same registry and authorization policy apply. A model request never bypasses the host handler or its consent policy.
+For chat, the backend signs the exact server-agent tool call, pauses the turn, and accepts only the matching result before resuming. For speech, the same registry and authorization policy apply. A model request never bypasses the host handler or its consent policy.
 
 ## WebMCP
 
