@@ -1,6 +1,6 @@
-# Visitor-approved screen observation (unreleased)
+# Visitor-approved screen observation (SDK 0.1.8)
 
-`ConvincedClient.describeScreen()` is available in the local worktree beyond published SDK `0.1.7`. It describes one frame that the host application has captured after the visitor approves tab sharing. The SDK does not start sharing or capture frames itself.
+`ConvincedClient.describeScreen()` in SDK `0.1.8` describes one frame that the host application has captured after the visitor approves tab sharing. The SDK does not start sharing or capture frames itself.
 
 ```ts
 const { observation } = await client.describeScreen(imageDataUrl, { signal })

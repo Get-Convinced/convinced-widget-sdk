@@ -1,8 +1,8 @@
-# Convinced Widget SDK 0.1.7
+# Convinced Widget SDK 0.1.8
 
 A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, server-agent conversation, knowledge, prompts, and provider credentials.
 
-Version 0.1.7 uses one conversation for text and speech:
+Version 0.1.8 uses one conversation for text and speech:
 
 - The Convinced server agent produces grounded answers, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
@@ -13,18 +13,18 @@ Version 0.1.7 uses one conversation for text and speech:
 
 No OpenAI key or provider configuration belongs in browser code. A browser receives only public organization/deployment identifiers and a short-lived signed session capability.
 
-## Unreleased local worktree
+## New in 0.1.8
 
-The local worktree contains changes beyond the published `0.1.7` package. No new SDK version has been published, and the published package remains unchanged. For the unreleased backend configuration paired with this work, the server-agent default is GPT-6.1 Sol with low reasoning; model selection stays on the server. `gpt-live-1` remains the optional voice layer. During a delegated voice request, the SDK can pass short, verified backend findings to Live as they arrive, then send the final briefing after the chat stream completes. It also has a signed `client.describeScreen(imageDataUrl, { signal })` method for one visitor-approved JPEG or PNG frame. Live transcript captions accumulate independently by speaker during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately; a real acoustic retest is still needed to verify the reported muted-session interruption.
+The paired backend selects its server-agent model; the browser does not. `gpt-live-1` remains the optional voice layer. With a compatible backend, a delegated voice request can pass short, verified findings to Live as they arrive, followed by the final briefing after chat completes. Provisional chat text can be reset and replaced during a signed host action. Live caller and assistant captions accumulate independently during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately. An acoustic retest is still needed for the reported unexpected caller fragments and muted-session interruption; synthetic tests do not prove those conditions resolved.
 
-The SDK still supports host-owned slides, forms, identity, and other registered actions. Each website chooses which capabilities to wire. See the [unreleased changelog](CHANGELOG.md), [screen observation guide](docs/screen-observation.md), and [speech ownership guide](docs/voice-session-ownership.md).
+The signed `client.describeScreen(imageDataUrl, { signal })` method can describe one visitor-approved JPEG or PNG frame. The host owns permission, capture, and teardown. The SDK still supports host-owned slides, forms, identity, and other registered actions; each website chooses which capabilities to wire. See the [changelog](CHANGELOG.md), [screen observation guide](docs/screen-observation.md), and [speech ownership guide](docs/voice-session-ownership.md).
 
-In browsers, the unreleased SDK captures a bounded public snapshot of the current `<main>` when a session starts and for each chat turn. It prioritizes content in the viewport and sends Live updates after page, scroll, or resize changes. The snapshot includes a public heading, semantic cards, links, section references, and compact public text. Forms, editors, dialogs, widget UI, hidden and marked private content are excluded; private or token-bearing URL paths suppress the snapshot, and unsafe links are omitted. Add site-specific UI roots with `pageSnapshot: { excludeSelectors: ['#your-agent-rail'] }`, or disable automatic capture with `pageSnapshot: { enabled: false }`. Page content is untrusted data; it cannot grant tool access or change agent instructions. When the tool registry has room, the SDK offers `host_focus_page_section` for scrolling to and briefly highlighting an exact public section title. Its receipt confirms presentation only after the section is actually visible; otherwise it reports a requested scroll or failed verification. Registered site actions always retain their slots.
+In browsers, the SDK captures a bounded public snapshot of the current `<main>` when a session starts and for each chat turn. It prioritizes content in the viewport and sends Live updates after page, scroll, or resize changes. The snapshot includes a public heading, semantic cards, links, section references, and compact public text. Forms, editors, dialogs, widget UI, hidden and marked private content are excluded; private or token-bearing URL paths suppress the snapshot, and unsafe links are omitted. Add site-specific UI roots with `pageSnapshot: { excludeSelectors: ['#your-agent-rail'] }`, or disable automatic capture with `pageSnapshot: { enabled: false }`. Page content is untrusted data; it cannot grant tool access or change agent instructions. When the tool registry has room, the SDK offers `host_focus_page_section` for scrolling to and briefly highlighting an exact public section title. Its receipt confirms presentation only after the section is actually visible; otherwise it reports a requested scroll or failed verification. Registered site actions always retain their slots.
 
 ## Install
 
 ```bash
-npm install --save-exact @convinced/widget-sdk@0.1.7
+npm install --save-exact @convinced/widget-sdk@0.1.8
 ```
 
 ## Headless quickstart

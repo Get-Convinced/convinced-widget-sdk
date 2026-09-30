@@ -30,7 +30,7 @@ A tool is a bounded capability, not arbitrary page scripting. Use a stable `host
 
 For chat, the server agent receives the manifest from the Convinced backend. A requested host action is returned as an SSE call plus a signed continuation capability. The SDK verifies the call against the local registry, obtains host consent, executes it once, and posts the result. The backend verifies organization, session, turn, call ID, tool name, expiry, and model arguments before resuming the agent.
 
-For speech, `gpt-live-1` delegates the utterance to the same backend conversation. The server agent chooses the same registry tools, so a slide/form/page action has one implementation and one result. In the unreleased local worktree, Live may receive a short verified finding before the final answer and a final briefing afterward; it does not independently repeat the action. Slides, forms, and identity flows remain SDK capabilities, but a host must register and render the ones its page actually offers.
+For speech, `gpt-live-1` delegates the utterance to the same backend conversation. The server agent chooses the same registry tools, so a slide/form/page action has one implementation and one result. With SDK `0.1.8` and a compatible backend, Live may receive a short verified finding before the final answer and a final briefing afterward; it does not independently repeat the action. Slides, forms, and identity flows remain SDK capabilities, but a host must register and render the ones its page actually offers.
 
 Use `createWebMcpBridge()` only when the agent must discover same-origin tools registered elsewhere through the browser's WebMCP API. Most sites should publish their existing registry and pass that registry directly to `ConvincedClient`.
 
