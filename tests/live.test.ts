@@ -849,6 +849,552 @@ describe('GPT Live WebRTC controller', () => {
     await controller.end()
   })
 
+  test.each([false, true])('delegates the caller once after a native acknowledgement (idle-flushed: %s)', async idleFlushed => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const errors: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => {
+        const exchange = { user, assistant }
+        nativeExchanges.push(exchange)
+        return () => {
+          const index = nativeExchanges.indexOf(exchange)
+          if (index >= 0) nativeExchanges.splice(index, 1)
+        }
+      },
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+      onError: error => errors.push(error.message),
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', event_id: 'caller-1', delta: 'Perfect, I am a supplier. What can Enmovil do for me?', start_ms: 100, end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', event_id: 'ack-1', delta: 'Um, okay.', start_ms: 850, end_ms: 1_000 })
+    if (idleFlushed) await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_200,
+      delegation: { id: 'supplier', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Perfect, I am a supplier. What can Enmovil do for me?'])
+    expect(nativeExchanges).toEqual([])
+    expect(errors).toEqual([])
+    await Bun.sleep(1_100)
+    expect(delegated).toHaveLength(1)
+    await controller.end()
+  })
+
+  test('a new no-offset delegation uses only speech after the completed native exchange', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => nativeExchanges.push({ user, assistant }),
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Inventory is open.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What can suppliers do here?', end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Suppliers can review inbound loads and delivery status.', end_ms: 1_500 })
+    await waitFor(() => nativeExchanges.length === 1)
+    expect(nativeExchanges).toEqual([{
+      user: 'What can suppliers do here?', assistant: 'Suppliers can review inbound loads and delivery status.',
+    }])
+
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', end_ms: 2_000 })
+    peer.channel.emit({ type: 'session.delegation.created', delegation: { id: 'inventory', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Open inventory.'])
+    expect(nativeExchanges).toHaveLength(1)
+    await controller.end()
+  })
+
+  test('a recent native acknowledgement can be followed by a matching no-offset delegation', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => {
+        const exchange = { user, assistant }
+        nativeExchanges.push(exchange)
+        return () => {
+          const index = nativeExchanges.indexOf(exchange)
+          if (index >= 0) nativeExchanges.splice(index, 1)
+        }
+      },
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open Supplier workflows.', end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Um, okay.', end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created',
+      delegation: { id: 'supplier-no-offset', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Please open Supplier workflows.'])
+    expect(nativeExchanges).toEqual([])
+    await controller.end()
+  })
+
+  test('a later delegation timeline offset still claims its caller after the acknowledgement', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => {
+        const exchange = { user, assistant }
+        nativeExchanges.push(exchange)
+        return () => {
+          const index = nativeExchanges.indexOf(exchange)
+          if (index >= 0) nativeExchanges.splice(index, 1)
+        }
+      },
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open Supplier workflows.', end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Um, okay.', end_ms: 1_000 })
+    // A delegation offset marks creation, so it can be later than the assistant
+    // acknowledgement and after the transcript has sat idle for more than 2s.
+    await Bun.sleep(3_300)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'supplier-late-offset', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Please open Supplier workflows.'])
+    expect(nativeExchanges).toEqual([])
+    await controller.end()
+  })
+
+  test('reclaiming a late voice action leaves one user turn in shared client history', async () => {
+    installBrowser()
+    let delegatedMessages: string[] = []
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      apiBase: 'https://app.example',
+      fetch: (async (input, init = {}) => {
+        const url = new URL(String(input))
+        if (url.pathname.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_history' } }))
+          return Response.json({ session: { id: 'live_history' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (url.pathname.endsWith('/session/end')) return Response.json({ ok: true })
+        if (url.pathname.endsWith('/chat')) {
+          delegatedMessages.push(String((JSON.parse(String(init.body)) as JsonObject).message))
+          return sse('Supplier workflows are open.')
+        }
+        if (url.pathname.endsWith('/session')) return Response.json({
+          sessionId: 'session_history', sessionCapability: 'capability_history',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true },
+        })
+        throw new Error(`Unexpected URL: ${url}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const live = client.createLiveController()
+    await live.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open Supplier workflows.', end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Um, okay.', end_ms: 1_000 })
+    await Bun.sleep(3_300)
+    expect(client.state.messages.filter(message => message.text === 'Please open Supplier workflows.')).toHaveLength(1)
+    expect(client.state.messages.some(message => message.text === 'Um, okay.')).toBe(true)
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'supplier-history-reclaim', target: 'client' } })
+    await waitFor(() => client.state.messages.some(message => message.text.includes('Supplier workflows are open.')))
+    expect(delegatedMessages).toEqual(['Please open Supplier workflows.'])
+    expect(client.state.messages.filter(message => message.text === 'Please open Supplier workflows.')).toHaveLength(1)
+    expect(client.state.messages.some(message => message.text === 'Um, okay.')).toBe(false)
+    await live.end()
+    await client.endSession()
+  })
+
+  test('multiple assistant caption flushes keep one caller owner for a later delegation', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => {
+        const exchange = { user, assistant }
+        nativeExchanges.push(exchange)
+        return () => {
+          const index = nativeExchanges.indexOf(exchange)
+          if (index >= 0) nativeExchanges.splice(index, 1)
+        }
+      },
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open the Supplier section.', end_ms: 500 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Suppliers can view inbound loads.', start_ms: 600, end_ms: 1_000 })
+    // A >1s timestamp gap flushes the first caption before the second arrives.
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'This helps coordinate delivery.', start_ms: 2_100, end_ms: 2_500 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 3_000,
+      delegation: { id: 'supplier-multi-caption', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Please open the Supplier section.'])
+    expect(nativeExchanges).toEqual([])
+    await controller.end()
+  })
+
+  test('caller continuation overlapping a native answer survives a later caption flush', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => {
+        const exchange = { user, assistant }
+        nativeExchanges.push(exchange)
+        return () => {
+          const index = nativeExchanges.indexOf(exchange)
+          if (index >= 0) nativeExchanges.splice(index, 1)
+        }
+      },
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open ', start_ms: 100, end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Got it.', start_ms: 850, end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Supplier workflows.', start_ms: 950, end_ms: 1_200 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'I am checking that section.', start_ms: 2_100, end_ms: 2_500 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 3_000,
+      delegation: { id: 'supplier-continuation', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Please open Supplier workflows.'])
+    expect(nativeExchanges).toEqual([])
+    await controller.end()
+  })
+
+  test('an old delegation offset cannot claim a later caller turn', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => nativeExchanges.push({ user, assistant }),
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Inventory is open.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What can suppliers do here?', start_ms: 100, end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Suppliers can review inbound loads and delivery status.', start_ms: 850, end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', start_ms: 2_000, end_ms: 2_500 })
+    expect(nativeExchanges).toEqual([{
+      user: 'What can suppliers do here?', assistant: 'Suppliers can review inbound loads and delivery status.',
+    }])
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'stale-supplier-action', target: 'client' } })
+    await Bun.sleep(250)
+    expect(delegated).toEqual([])
+
+    // A fresh event for the new action must still be able to claim its text.
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 2_700,
+      delegation: { id: 'inventory-action', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Open inventory.'])
+    await controller.end()
+  })
+
+  test('a newer caller arriving before claim prevents an already queued old delegation', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Inventory is open.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What can suppliers do here?', start_ms: 100, end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Suppliers can review inbound loads.', start_ms: 850, end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'queued-stale-supplier', target: 'client' } })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', start_ms: 2_000, end_ms: 2_500 })
+    await Bun.sleep(250)
+    expect(delegated).toEqual([])
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 2_700,
+      delegation: { id: 'fresh-inventory', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Open inventory.'])
+    await controller.end()
+  })
+
+  test('an old offset cannot reclaim a newer native answer after it has flushed', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Inventory is open.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What can suppliers do here?', start_ms: 100, end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Suppliers review inbound loads.', start_ms: 850, end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'What can inventory do?', start_ms: 2_000, end_ms: 2_500 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Inventory shows demand and availability.', start_ms: 2_600, end_ms: 3_000 })
+    await Bun.sleep(1_100)
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'old-supplier-offset', target: 'client' } })
+    await Bun.sleep(250)
+    expect(delegated).toEqual([])
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 3_500,
+      delegation: { id: 'inventory-after-native', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['What can inventory do?'])
+    await controller.end()
+  })
+
+  test('an input caption flush retains its caller start for stale-offset rejection', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Inventory is open.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', start_ms: 2_000, end_ms: 2_500 })
+    await Bun.sleep(1_100)
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'idle-stale-inventory', target: 'client' } })
+    await Bun.sleep(2_100)
+    expect(delegated).toEqual([])
+
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 2_700,
+      delegation: { id: 'valid-idle-inventory', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Open inventory.'])
+    await controller.end()
+  })
+
+  test('duplicate delivery of one client delegation runs the host action once', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Supplier workflows are visible.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show supplier workflows.', end_ms: 500 })
+    const event = { type: 'session.delegation.created', offset_ms: 500,
+      delegation: { id: 'supplier-once', target: 'client' } }
+    peer.channel.emit(event)
+    peer.channel.emit(event)
+    await waitFor(() => delegated.length === 1)
+    await Bun.sleep(200)
+    expect(delegated).toEqual(['Show supplier workflows.'])
+    await controller.end()
+  })
+
+  test('an empty delegation returns a recoverable voice response without invoking the host', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const errors: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Unexpected host call.' }
+      },
+      onError: error => errors.push(error.message),
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_000,
+      delegation: { id: 'empty-input', target: 'client' } })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append' && event.delegation_id === 'empty-input'))
+    expect(delegated).toEqual([])
+    expect(errors).toEqual(['Live delegation arrived without an input transcript.'])
+    expect(peer.channel.sent).toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'empty-input',
+      content: expect.stringContaining('Please repeat it.'),
+    }))
+    await controller.end()
+  })
+
+  test('muting lets an already authorized delegated action finish', async () => {
+    installBrowser()
+    let delegationStarted!: (signal: AbortSignal) => void
+    let resolveDelegation!: (result: { message: string }) => void
+    const result = new Promise<{ message: string }>(resolve => { resolveDelegation = resolve })
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: (_delegation, signal) => {
+        delegationStarted(signal)
+        return result
+      },
+    })
+    await controller.start()
+    const started = new Promise<AbortSignal>(resolve => { delegationStarted = resolve })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', end_ms: 500 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 500,
+      delegation: { id: 'inventory-cancel', target: 'client' } })
+    const signal = await started
+    controller.setMuted(true)
+    expect(signal.aborted).toBe(false)
+    resolveDelegation({ message: 'Inventory is open.' })
+    await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append' && event.delegation_id === 'inventory-cancel'))
+    expect(peer.channel.sent).toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'inventory-cancel',
+    }))
+    await controller.end()
+  })
+
+  test('ending aborts an active delegated action and suppresses its late response', async () => {
+    installBrowser()
+    let delegationStarted!: (signal: AbortSignal) => void
+    let resolveDelegation!: (result: { message: string }) => void
+    const result = new Promise<{ message: string }>(resolve => { resolveDelegation = resolve })
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: (_delegation, signal) => {
+        delegationStarted(signal)
+        return result
+      },
+    })
+    await controller.start()
+    const started = new Promise<AbortSignal>(resolve => { delegationStarted = resolve })
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', end_ms: 500 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 500,
+      delegation: { id: 'inventory-end', target: 'client' } })
+    const signal = await started
+    await controller.end()
+    expect(signal.aborted).toBe(true)
+    resolveDelegation({ message: 'Inventory is open.' })
+    await Bun.sleep(20)
+    expect(peer.channel.sent).not.toContainEqual(expect.objectContaining({
+      type: 'session.commentary.append', delegation_id: 'inventory-end',
+    }))
+  })
+
+  test('mute clears a retained caller and unmute does not restore it', async () => {
+    installBrowser()
+    const delegated: string[] = []
+    const nativeExchanges: Array<{ user: string; assistant: string }> = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onNativeExchange: (user, assistant) => nativeExchanges.push({ user, assistant }),
+      onClientDelegation: ({ transcript }) => {
+        delegated.push(transcript)
+        return { message: 'Done.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Please open supplier workflows.', end_ms: 800 })
+    peer.channel.emit({ type: 'session.output_transcript.delta', delta: 'Um, okay.', end_ms: 1_000 })
+    await Bun.sleep(1_100)
+    controller.setMuted(true)
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Phantom pre-mute request.', end_ms: 1_200 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 1_500,
+      delegation: { id: 'muted-request', target: 'client' } })
+    controller.setMuted(false)
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Open inventory.', start_ms: 2_000, end_ms: 2_500 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 2_700,
+      delegation: { id: 'post-mute-request', target: 'client' } })
+    await waitFor(() => delegated.length === 1)
+    expect(delegated).toEqual(['Open inventory.'])
+    expect(nativeExchanges).toHaveLength(1)
+    await controller.end()
+  })
+
   test('mute intent gates phantom input and delegations before ACK and after a stale ACK', async () => {
     installBrowser()
     const delegated: string[] = []

@@ -89,8 +89,8 @@ export interface ConvincedLiveControllerOptions {
   onLiveSessionId?: (liveSessionId: string) => void
   onDisconnect?: () => void
   onError?: (error: Error, context?: unknown) => void
-  /** @internal Record an exchange answered directly by Live in the shared conversation. */
-  onNativeExchange?: (user: string, assistant: string) => void
+  /** @internal Record a native exchange; an optional undo retracts it if Live delegates that caller later. */
+  onNativeExchange?: (user: string, assistant: string) => unknown
   onClientDelegation?: (
     delegation: LiveClientDelegation,
     signal: AbortSignal,
@@ -121,6 +121,13 @@ type PendingDelegation = {
   delegation: LiveClientDelegation
   generation: number
   receivedAt: number
+}
+type RecentNativeExchange = {
+  user: string
+  assistant: string
+  userStartMs?: number
+  assistantEndMs?: number
+  undo?: () => void
 }
 type ServerEvent = {
   type?: unknown
@@ -161,6 +168,8 @@ export class ConvincedLiveController {
   private sessionClosed: (() => void) | null = null
   /** Caller words for the next native exchange or delegation, independent of caption flushes. */
   private readonly inputTurnChunks: string[] = []
+  /** The latest native answer can be reclaimed if Live delegates that same caller turn later. */
+  private recentNativeExchange: RecentNativeExchange | null = null
   private readonly pendingDelegations: PendingDelegation[] = []
   private latestDelegationId: string | null = null
   private activeDelegation: AbortController | null = null
@@ -168,6 +177,7 @@ export class ConvincedLiveController {
   private backendSpeechUntil = 0
   private delegationTimer: ReturnType<typeof setTimeout> | null = null
   private lastInputTranscriptAt = 0
+  private inputTurnStartMs: number | undefined
   private inputTranscriptEndMs: number | undefined
   private stateValue: ConvincedLiveState = {
     status: 'idle', mode: null, muted: false, liveSessionId: null, error: null,
@@ -203,6 +213,8 @@ export class ConvincedLiveController {
     this.lastMuteRequestId = null
     this.requestedMuted = context.startMuted === true
     this.inputTurnChunks.length = 0
+    this.recentNativeExchange = null
+    this.inputTurnStartMs = undefined
     this.pendingDelegations.length = 0
     this.latestDelegationId = null
     this.backendSpeechActive = false
@@ -256,6 +268,8 @@ export class ConvincedLiveController {
     this.update({ muted })
     if (muted) {
       this.inputTurnChunks.length = 0
+      this.recentNativeExchange = null
+      this.inputTurnStartMs = undefined
       this.clearInputTranscript()
       delete this.outputTranscript.nativeUserChunkCount
       this.pendingDelegations.length = 0
@@ -279,6 +293,7 @@ export class ConvincedLiveController {
   /** @internal Include a just-spoken Live reply before the next typed chat turn. */
   flushNativeContext(): void {
     if (this.outputTranscript.text) this.flushTranscript('assistant')
+    this.recentNativeExchange = null
   }
 
   /** Give a verified backend result to GPT Live for natural spoken paraphrasing. */
@@ -450,6 +465,9 @@ export class ConvincedLiveController {
     }
     if (type === 'session.delegation.created' && event.delegation?.target === 'client') {
       if (this.requestedMuted) return
+      const callerStartMs = this.recentNativeExchange?.userStartMs ?? this.inputTurnStartMs
+      if (typeof event.offset_ms === 'number' && callerStartMs !== undefined &&
+          event.offset_ms < callerStartMs) return
       const delegationId = validId(event.delegation.id, 256)
       if (!delegationId || this.handledDelegations.has(delegationId)) return
       this.handledDelegations.add(delegationId)
@@ -489,6 +507,13 @@ export class ConvincedLiveController {
     const buffer = role === 'user' ? this.inputTranscript : this.outputTranscript
     const startMs = typeof event.start_ms === 'number' ? event.start_ms : undefined
     const endMs = typeof event.end_ms === 'number' ? event.end_ms : undefined
+    if (role === 'user' && this.inputTurnChunks.length === 0) {
+      const recent = this.recentNativeExchange
+      const sameTurn = recent && startMs !== undefined && recent.assistantEndMs !== undefined &&
+        startMs <= recent.assistantEndMs
+      if (!sameTurn) this.recentNativeExchange = null
+      this.inputTurnStartMs = sameTurn ? recent.userStartMs : startMs
+    }
     // Live is full duplex. A fragment from one speaker must not finish the
     // other speaker's caption; their deltas can arrive interleaved.
     if (role === 'assistant' && !buffer.text) buffer.nativeUserChunkCount = this.inputTurnChunks.length
@@ -544,11 +569,27 @@ export class ConvincedLiveController {
       // If the caller kept speaking during this reply, Live may simply have
       // interjected. Keep every caller chunk for the delegated request.
       if (role === 'assistant' && !buffer.backendSpeech && !isBackchannel(text) &&
-          !callerContinuedDuringReply) {
+          !callerContinuedDuringReply && this.pendingDelegations.length === 0) {
         const priorUserSpeech = this.inputTurnChunks.slice(0, nativeChunkCount).join('').replace(/\s+/g, ' ').trim()
         if (priorUserSpeech) {
-          call(() => this.options.onNativeExchange?.(priorUserSpeech, text))
+          const previous = this.recentNativeExchange
+          call(() => previous?.undo?.())
+          const user = [previous?.user, priorUserSpeech].filter(Boolean).join(' ')
+          const assistant = [previous?.assistant, text].filter(Boolean).join(' ')
+          const userStartMs = previous?.userStartMs ?? this.inputTurnStartMs
+          const assistantEndMs = buffer.endMs ?? previous?.assistantEndMs
+          let callbackResult: unknown
+          try { callbackResult = this.options.onNativeExchange?.(user, assistant) } catch { /* consumer callback */ }
+          this.recentNativeExchange = {
+            user, assistant,
+            ...(userStartMs !== undefined ? { userStartMs } : {}),
+            ...(assistantEndMs !== undefined ? { assistantEndMs } : {}),
+            ...(typeof callbackResult === 'function' ? { undo: callbackResult as () => void } : {}),
+          }
           this.inputTurnChunks.splice(0, nativeChunkCount)
+          this.inputTurnStartMs = undefined
+          this.lastInputTranscriptAt = 0
+          this.inputTranscriptEndMs = undefined
         }
       }
       const message: LiveMessage = {
@@ -580,6 +621,7 @@ export class ConvincedLiveController {
     delete buffer.endMs
     this.inputActive = false
     this.lastInputTranscriptAt = 0
+    this.inputTurnStartMs = undefined
     this.inputTranscriptEndMs = undefined
     this.updateMode()
   }
@@ -600,14 +642,24 @@ export class ConvincedLiveController {
       this.claimPendingDelegation(generation)
       return
     }
-    // A native reply immediately before a delegated follow-up belongs in the
-    // conversation history, not in the follow-up's caller transcript.
+    // A newer caller can start during the settle window after an older
+    // delegation arrived. The older event must not claim that caller.
+    const callerStartMs = this.recentNativeExchange?.userStartMs ?? this.inputTurnStartMs
+    if (pending.delegation.offsetMs !== undefined && callerStartMs !== undefined &&
+        pending.delegation.offsetMs < callerStartMs) {
+      this.pendingDelegations.shift()
+      if (this.pendingDelegations.length > 0) this.scheduleDelegation(generation)
+      return
+    }
+    // Keep the native caption visible; the same caller may still be delegated.
     if (this.outputTranscript.text && !this.outputTranscript.backendSpeech) {
       this.flushTranscript('assistant')
     }
     const now = Date.now()
     const age = now - pending.receivedAt
-    const transcript = this.inputTurnChunks.join('').replace(/\s+/g, ' ').trim()
+    const recent = this.recentNativeExchange
+    const currentSpeech = this.inputTurnChunks.join('').replace(/\s+/g, ' ').trim()
+    const transcript = [recent?.user, currentSpeech].filter(Boolean).join(' ').trim()
     if (!transcript) {
       if (age < DELEGATION_TRANSCRIPT_TIMEOUT_MS) {
         this.scheduleDelegation(generation)
@@ -616,6 +668,10 @@ export class ConvincedLiveController {
         const error = new Error('Live delegation arrived without an input transcript.')
         this.events.emit('error', error)
         call(() => this.options.onError?.(error, pending.delegation))
+        if (generation === this.generation && pending.delegation.delegationId === this.latestDelegationId &&
+            this.stateValue.status === 'connected' && !this.requestedMuted) {
+          this.sendBackendResult('I missed that request. Please repeat it.', pending.delegation.delegationId)
+        }
       }
       return
     }
@@ -624,14 +680,17 @@ export class ConvincedLiveController {
       this.inputTranscriptEndMs >= pending.delegation.offsetMs
     const transcriptSettled = this.lastInputTranscriptAt > 0 &&
       now - this.lastInputTranscriptAt >= TRANSCRIPT_IDLE_MS
-    if (!offsetCovered && !transcriptSettled && age < DELEGATION_TRANSCRIPT_TIMEOUT_MS) {
+    if (currentSpeech && !offsetCovered && !transcriptSettled && age < DELEGATION_TRANSCRIPT_TIMEOUT_MS) {
       this.scheduleDelegation(generation)
       return
     }
     this.flushTranscript('user')
     this.pendingDelegations.shift()
+    this.recentNativeExchange = null
+    call(() => recent?.undo?.())
     this.inputTurnChunks.length = 0
     this.lastInputTranscriptAt = 0
+    this.inputTurnStartMs = undefined
     this.inputTranscriptEndMs = undefined
     void this.runClientDelegation({ ...pending.delegation, transcript }, generation)
     if (this.pendingDelegations.length > 0) this.scheduleDelegation(generation)
@@ -757,8 +816,10 @@ export class ConvincedLiveController {
     this.backendSpeechActive = false
     this.backendSpeechUntil = 0
     this.lastInputTranscriptAt = 0
+    this.inputTurnStartMs = undefined
     this.inputTranscriptEndMs = undefined
     this.inputTurnChunks.length = 0
+    this.recentNativeExchange = null
     this.transcriptEventIds.clear()
     this.transcriptEventOrder.length = 0
     this.lastMuteRequestId = null

@@ -761,8 +761,14 @@ export class ConvincedClient {
       onNativeExchange: (user, assistant) => {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
         // 1,024 UTF-16 code units always fit the 5 KiB UTF-8 history limit.
-        this.appendMessage(createMessage('user', user.slice(0, 1024)), false)
-        this.appendMessage(createMessage('assistant', assistant.slice(0, 1024)), false)
+        const userMessage = createMessage('user', user.slice(0, 1024))
+        const assistantMessage = createMessage('assistant', assistant.slice(0, 1024))
+        this.appendMessage(userMessage, false)
+        this.appendMessage(assistantMessage, false)
+        return () => {
+          this.removeMessage(assistantMessage.id)
+          this.removeMessage(userMessage.id)
+        }
       },
       onClientDelegation: async ({ transcript }, signal, onProgress) => {
         const delegatedSessionId = boundSessionId
