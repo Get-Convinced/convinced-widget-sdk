@@ -1,6 +1,6 @@
 {
   "name": "@convinced/widget-sdk",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Full-duplex voice, chat, WebMCP, and host-page tools for Convinced experiences.",
   "homepage": "https://github.com/Get-Convinced/convinced-widget-sdk#readme",
   "bugs": {
@@ -30,9 +30,11 @@
     "examples/vanilla",
     "AGENT_BUILD_PROMPT.txt",
     "README.md",
+    "CHANGELOG.md",
     "docs/webmcp-handoff.md",
     "docs/agent-prompt-management.md",
     "docs/voice-session-ownership.md",
+    "docs/screen-observation.md",
     "LICENSE"
   ],
   "sideEffects": false,

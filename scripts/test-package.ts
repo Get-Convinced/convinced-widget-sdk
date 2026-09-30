@@ -20,8 +20,10 @@ try {
 
   for (const required of [
     'AGENT_BUILD_PROMPT.txt',
+    'CHANGELOG.md',
     'LICENSE',
     'README.md',
+    'docs/screen-observation.md',
     'dist/THIRD_PARTY_NOTICES.txt',
     'dist/convinced-widget.global.js',
     'dist/index.d.ts',

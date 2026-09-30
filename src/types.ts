@@ -567,8 +567,18 @@ export interface SseDeltaEvent {
   delta: string
 }
 
+/** Replaces provisional streamed text before the backend emits corrected deltas. */
+export interface SseTextResetEvent {
+  type: 'text_reset'
+}
+
 export interface SseVoiceBriefingEvent {
   type: 'voice_briefing'
+  text: string
+}
+
+export interface SseVoiceProgressEvent {
+  type: 'voice_context' | 'voice_thinking'
   text: string
 }
 
@@ -607,7 +617,9 @@ export interface SseErrorEvent {
 
 export type WidgetSseEvent =
   | SseDeltaEvent
+  | SseTextResetEvent
   | SseVoiceBriefingEvent
+  | SseVoiceProgressEvent
   | SseActivityEvent
   | SseProfileGateEvent
   | SseClientToolCallEvent

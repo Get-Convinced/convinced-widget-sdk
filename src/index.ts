@@ -34,6 +34,7 @@ export {
   type ConvincedLiveState,
   type LiveClientDelegation,
   type LiveClientDelegationResult,
+  type LiveDelegationProgress,
   type LiveBackendMessage,
   type LiveMessage,
   type LiveMode,
@@ -100,3 +101,10 @@ export {
   type PostHogSessionLink,
 } from './posthog.js'
 export * from './types.js'
+export {
+  capturePageSnapshot,
+  createPageFocusTool,
+  pageSnapshotLiveContext,
+  type PageSnapshot,
+  type PageSnapshotOptions,
+} from './page-snapshot.js'
