@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- Keep the latest caller question available when Live acknowledges it and then delegates the same turn, including after caption flush. Reclaiming that question removes its provisional native exchange from shared history, so the delegated question appears once.
+- Ignore a delegation whose timeline predates a newer caller, without consuming that caller. If a delegation truly has no transcript after the existing wait, send a brief recoverable Live response asking the caller to repeat.
+- Preserve the 0.1.8 chat, tool, page-snapshot, mute, and backend configuration contracts. This patch does not resolve the separately reported unexpected input fragments during digitally silent or muted audio.
+
 ## 0.1.8
 
 - Capture bounded, semantic public `<main>` snapshots at session start and on chat turns. Prioritize visible content; update Live context on meaningful page, scroll, and resize changes. Exclude private, hidden, interactive, and widget content, suppress snapshots for unsafe URL paths, and omit unsafe links. A compatible backend can use current-page evidence before looking up deeper knowledge.

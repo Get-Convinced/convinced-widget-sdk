@@ -1,8 +1,8 @@
-# Convinced Widget SDK 0.1.8
+# Convinced Widget SDK 0.1.9
 
 A headless browser SDK for adding one Convinced agent to any website. The host application owns the UI. Convinced owns the signed session, server-agent conversation, knowledge, prompts, and provider credentials.
 
-Version 0.1.8 uses one conversation for text and speech:
+Version 0.1.9 uses one conversation for text and speech:
 
 - The Convinced server agent produces grounded answers, Markdown, media directives, and tool decisions.
 - `gpt-live-1` is an optional full-duplex speech input/output layer.
@@ -13,7 +13,11 @@ Version 0.1.8 uses one conversation for text and speech:
 
 No OpenAI key or provider configuration belongs in browser code. A browser receives only public organization/deployment identifiers and a short-lived signed session capability.
 
-## New in 0.1.8
+## Fixed in 0.1.9
+
+Live now keeps a caller's question when it speaks a brief acknowledgement before delegating the same turn. It can reclaim that question after the caption has flushed, without leaving a duplicate native exchange in chat history. A stale delegation cannot claim a newer question; if Live delegates with no transcript, it asks the caller to repeat. The SDK and backend still use the same session, tools, and provider configuration.
+
+## Added in 0.1.8
 
 The paired backend selects its server-agent model; the browser does not. `gpt-live-1` remains the optional voice layer. With a compatible backend, a delegated voice request can pass short, verified findings to Live as they arrive, followed by the final briefing after chat completes. Provisional chat text can be reset and replaced during a signed host action. Live caller and assistant captions accumulate independently during overlap, while caller-turn words remain intact across assistant backchannels. Mute intent stops local capture and gates new input events immediately. An acoustic retest is still needed for the reported unexpected caller fragments and muted-session interruption; synthetic tests do not prove those conditions resolved.
 
@@ -24,7 +28,7 @@ In browsers, the SDK captures a bounded public snapshot of the current `<main>` 
 ## Install
 
 ```bash
-npm install --save-exact @convinced/widget-sdk@0.1.8
+npm install --save-exact @convinced/widget-sdk@0.1.9
 ```
 
 ## Headless quickstart
