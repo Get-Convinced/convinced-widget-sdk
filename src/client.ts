@@ -10,6 +10,7 @@ import {
 } from './tools/webmcp.js'
 import {
   SSE_DONE,
+  DEFAULT_SSE_IDLE_TIMEOUT_MS,
   ConvincedApiError,
   apiError,
   iterateSse,
@@ -102,6 +103,8 @@ export interface ConvincedClientOptions {
   authorizeToolCall?: ToolCallAuthorizer
   /** May reduce, but never exceed, the protocol maximum of sixteen continuation rounds. */
   maxClientToolRounds?: number
+  /** Maximum pause between response body chunks; defaults to 35 seconds. */
+  chatStreamIdleTimeoutMs?: number
   defaultChatContext?: SendMessageOptions['context']
   /** Public semantic host-page grounding. Enabled by default in browsers. */
   pageSnapshot?: PageSnapshotOptions
@@ -141,6 +144,7 @@ export class ConvincedClient {
   private readonly events = new TypedEventEmitter<ConvincedClientEventMap>()
   private readonly authorizeToolCall?: ToolCallAuthorizer
   private readonly maxClientToolRounds: number
+  private readonly chatStreamIdleTimeoutMs: number
   private readonly defaultChatContext: SendMessageOptions['context']
   private readonly pageSnapshotOptions: PageSnapshotOptions
   private pageObserver: MutationObserver | null = null
@@ -199,6 +203,10 @@ export class ConvincedClient {
       Math.max(0, Math.floor(options.maxClientToolRounds ?? MAX_CLIENT_TOOL_ROUNDS)),
     )
     this.defaultChatContext = options.defaultChatContext ?? {}
+    this.chatStreamIdleTimeoutMs = options.chatStreamIdleTimeoutMs ?? DEFAULT_SSE_IDLE_TIMEOUT_MS
+    if (!Number.isFinite(this.chatStreamIdleTimeoutMs) || this.chatStreamIdleTimeoutMs <= 0) {
+      throw new RangeError('chatStreamIdleTimeoutMs must be a positive finite number.')
+    }
     this.pageSnapshotOptions = options.pageSnapshot ?? {}
   }
 
@@ -278,7 +286,8 @@ export class ConvincedClient {
     this.assertUsable()
     this.patchState({ status: 'initializing', error: null })
     try {
-      await this.getConfig()
+      // The signed session already returns the selected agent's config. A
+      // separate config lookup adds a network round trip before the first turn.
       await this.createSession(options.session ?? browserSessionInput())
       if (options.loadMedia !== false && this.stateValue.config?.slidesEnabled !== false) {
         await Promise.all([this.getSlides(), this.getSlideMetadata()])
@@ -761,8 +770,14 @@ export class ConvincedClient {
       onNativeExchange: (user, assistant) => {
         if (this.stateValue.status === 'destroyed' || boundSessionId !== this.stateValue.session?.sessionId) return
         // 1,024 UTF-16 code units always fit the 5 KiB UTF-8 history limit.
-        this.appendMessage(createMessage('user', user.slice(0, 1024)), false)
-        this.appendMessage(createMessage('assistant', assistant.slice(0, 1024)), false)
+        const userMessage = createMessage('user', user.slice(0, 1024))
+        const assistantMessage = createMessage('assistant', assistant.slice(0, 1024))
+        this.appendMessage(userMessage, false)
+        this.appendMessage(assistantMessage, false)
+        return () => {
+          this.removeMessage(assistantMessage.id)
+          this.removeMessage(userMessage.id)
+        }
       },
       onClientDelegation: async ({ transcript }, signal, onProgress) => {
         const delegatedSessionId = boundSessionId
@@ -820,10 +835,10 @@ export class ConvincedClient {
         }
         return
       }
-      const serialized = JSON.stringify(snapshot)
-      if (serialized === this.lastLivePageSnapshot) return
-      this.lastLivePageSnapshot = serialized
-      live.sendContextualUpdate(pageSnapshotLiveContext(snapshot), 'current-host-page')
+      const context = pageSnapshotLiveContext(snapshot)
+      if (context === this.lastLivePageSnapshot) return
+      this.lastLivePageSnapshot = context
+      live.sendContextualUpdate(context, 'current-host-page')
     }
     update()
     if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
@@ -1037,6 +1052,25 @@ export class ConvincedClient {
 
     let fullText = ''
     let voiceBriefing: string | undefined
+    let deliveredVoiceBriefing: string | undefined
+    const directVoiceFindings = new Set<string>()
+    const forwardVoiceProgress = (update: LiveDelegationProgress) => {
+      if (!voiceTurn || controller.signal.aborted) return
+      if (options.onProgress) {
+        options.onProgress(update)
+      } else if (options.speak !== false && update.kind === 'instruction') {
+        const live = [...this.sessionLives].find(candidate => candidate.state.status === 'connected')
+        live?.sendBackendInstructions(update.text)
+      } else if (options.speak !== false && update.kind === 'commentary') {
+        const live = [...this.sessionLives].find(candidate => candidate.state.status === 'connected')
+        if (!live) return
+        if (!directVoiceFindings.has(update.text)) {
+          live.sendBackendResult(update.text)
+          directVoiceFindings.add(update.text)
+        }
+        if (update.final) deliveredVoiceBriefing = update.text
+      }
+    }
     let sawProfileGate = false
     let continuation:
       | {
@@ -1062,6 +1096,9 @@ export class ConvincedClient {
           // 0.1.7 clients omit this field and cannot safely consume resets.
           streamProtocol: 1,
           voiceTurn: voiceTurn || undefined,
+          // A compatible backend may commit a short grounded speech unit
+          // before the written answer, after a verified page action.
+          voiceBriefingFirst: voiceTurn || undefined,
           history,
           clientTools: clientTools.length > 0 ? clientTools : undefined,
           clientTurnId: clientTools.length > 0 ? clientTurnId : undefined,
@@ -1086,81 +1123,89 @@ export class ConvincedClient {
             signal: requestDeadline.signal,
           })
           throwIfAborted(requestDeadline.signal)
-        } finally {
+        } catch (error) {
           requestDeadline.dispose()
+          throw error
         }
-        if (!response.ok) throw await apiError(response)
 
         const pendingCalls: Array<{ turnId: string; call: ClientToolCall }> = []
         let pause: SseClientToolPauseEvent | null = null
 
-        for await (const event of iterateSse(response, controller.signal)) {
-          if (event === SSE_DONE) break
-          this.events.emit('raw_event', event)
+        try {
+          if (!response.ok) throw await apiError(response)
+          for await (const event of iterateSse(response, requestDeadline.signal, {
+            idleTimeoutMs: this.chatStreamIdleTimeoutMs,
+          })) {
+            if (event === SSE_DONE) break
+            this.events.emit('raw_event', event)
 
-          if (isClientToolCallEvent(event)) {
-            const call = normalizeToolCall(event.call, this.tools)
-            const normalizedEvent: SseClientToolCallEvent = {
-              type: 'client_tool_call',
-              turnId: requiredTurnId(event.turnId),
-              call,
+            if (isClientToolCallEvent(event)) {
+              const call = normalizeToolCall(event.call, this.tools)
+              const normalizedEvent: SseClientToolCallEvent = {
+                type: 'client_tool_call',
+                turnId: requiredTurnId(event.turnId),
+                call,
+              }
+              pendingCalls.push({ turnId: normalizedEvent.turnId, call })
+              this.events.emit('client_tool_call', normalizedEvent)
+              continue
             }
-            pendingCalls.push({ turnId: normalizedEvent.turnId, call })
-            this.events.emit('client_tool_call', normalizedEvent)
-            continue
-          }
-          if (event.type === 'client_tool_pause') {
-            pause = normalizePause(event)
-            this.events.emit('client_tool_pause', pause)
-            continue
-          }
-          if (event.type === 'voice_briefing') {
-            if (typeof event.text === 'string' && event.text.trim() &&
-                new TextEncoder().encode(event.text.trim()).byteLength <= MAX_VOICE_UPDATE_BYTES) {
-              voiceBriefing = event.text.trim()
+            if (event.type === 'client_tool_pause') {
+              pause = normalizePause(event)
+              this.events.emit('client_tool_pause', pause)
+              continue
             }
-            continue
-          }
-          if (event.type === 'voice_context' || event.type === 'voice_thinking') {
-            const text = typeof event.text === 'string' ? event.text.trim() : ''
-            if (voiceTurn && options.onProgress && text && !controller.signal.aborted &&
-                new TextEncoder().encode(text).byteLength <= MAX_VOICE_UPDATE_BYTES) {
-              options.onProgress({
-                kind: event.type === 'voice_context' ? 'commentary' : 'thinking',
-                text,
+            if (event.type === 'voice_briefing') {
+              if (typeof event.text === 'string' && event.text.trim() &&
+                  new TextEncoder().encode(event.text.trim()).byteLength <= MAX_VOICE_UPDATE_BYTES) {
+                voiceBriefing = event.text.trim()
+                forwardVoiceProgress({ kind: 'commentary', text: voiceBriefing, final: true })
+              }
+              continue
+            }
+            if (event.type === 'voice_context' || event.type === 'voice_thinking' || event.type === 'voice_instruction') {
+              const text = typeof event.text === 'string' ? event.text.trim() : ''
+              if (voiceTurn && text && !controller.signal.aborted &&
+                  new TextEncoder().encode(text).byteLength <= MAX_VOICE_UPDATE_BYTES) {
+                forwardVoiceProgress({
+                  kind: event.type === 'voice_context' ? 'commentary' : event.type === 'voice_instruction' ? 'instruction' : 'thinking',
+                  text,
+                })
+              }
+              continue
+            }
+            if (event.type === 'text_reset') {
+              fullText = ''
+              this.updateAssistant(assistantMessage.id, '')
+              this.events.emit('message_delta', { messageId: assistantMessage.id, delta: '', text: '' })
+              continue
+            }
+            if (typeof (event as { delta?: unknown }).delta === 'string') {
+              const delta = (event as { delta: string }).delta
+              fullText += delta
+              this.updateAssistant(assistantMessage.id, fullText)
+              this.events.emit('message_delta', {
+                messageId: assistantMessage.id,
+                delta,
+                text: fullText,
               })
+              continue
             }
-            continue
+            if (event.type === 'activity_start' || event.type === 'activity_step' || event.type === 'activity_complete' || event.type === 'profile_gate') {
+              if (event.type === 'profile_gate') sawProfileGate = true
+              this.events.emit('activity', event as ConvincedClientEventMap['activity'])
+              continue
+            }
+            if ('error' in event && typeof event.error === 'string') {
+              throw new ConvincedSdkError(
+                typeof event.code === 'string' ? event.code : 'stream_error',
+                event.error,
+                event,
+              )
+            }
           }
-          if (event.type === 'text_reset') {
-            fullText = ''
-            this.updateAssistant(assistantMessage.id, '')
-            this.events.emit('message_delta', { messageId: assistantMessage.id, delta: '', text: '' })
-            continue
-          }
-          if (typeof (event as { delta?: unknown }).delta === 'string') {
-            const delta = (event as { delta: string }).delta
-            fullText += delta
-            this.updateAssistant(assistantMessage.id, fullText)
-            this.events.emit('message_delta', {
-              messageId: assistantMessage.id,
-              delta,
-              text: fullText,
-            })
-            continue
-          }
-          if (event.type === 'activity_start' || event.type === 'activity_step' || event.type === 'activity_complete' || event.type === 'profile_gate') {
-            if (event.type === 'profile_gate') sawProfileGate = true
-            this.events.emit('activity', event as ConvincedClientEventMap['activity'])
-            continue
-          }
-          if ('error' in event && typeof event.error === 'string') {
-            throw new ConvincedSdkError(
-              typeof event.code === 'string' ? event.code : 'stream_error',
-              event.error,
-              event,
-            )
-          }
+        } finally {
+          requestDeadline.dispose()
         }
         throwIfAborted(controller.signal)
 
@@ -1269,7 +1314,8 @@ export class ConvincedClient {
       this.events.emit('content', { messageId: complete.id, content })
       this.events.emit('message', complete)
       this.patchState({ status: 'ready', activeTurnId: null, error: null })
-      if (options.speak !== false && complete.text.trim()) {
+      if (options.speak !== false && complete.text.trim() &&
+          deliveredVoiceBriefing !== (complete.voiceBriefing ?? complete.text)) {
         for (const live of this.sessionLives) {
           if (live.state.status !== 'connected') continue
           try { live.sendBackendResult(complete.voiceBriefing ?? complete.text) } catch { /* transport closed */ }
@@ -1389,7 +1435,7 @@ export class ConvincedClient {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (this.widgetToken) headers.set('x-widget-token', this.widgetToken)
-    headers.set('x-convinced-sdk-version', '0.1.8')
+    headers.set('x-convinced-sdk-version', '0.1.9')
     return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers })
   }
 

@@ -17,6 +17,28 @@ const config = {
 }
 
 describe('ConvincedClient transport', () => {
+  test('a stalled chat body releases the queue so the visitor can retry', async () => {
+    let calls = 0
+    let cancelled = false
+    const client = new ConvincedClient({
+      orgSlug: 'demo', chatStreamIdleTimeoutMs: 20,
+      fetch: (async input => {
+        if (String(input).endsWith('/session')) return Response.json({
+          sessionId: 'idle_session', sessionCapability: 'idle_capability', config,
+        })
+        if (++calls === 1) return new Response(new ReadableStream<Uint8Array>({
+          cancel() { cancelled = true },
+        }), { headers: { 'Content-Type': 'text/event-stream' } })
+        return sse([{ delta: 'The retry completed.' }])
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    await expect(client.sendMessage('Show supplier workflows.')).rejects.toMatchObject({ code: 'stream_idle_timeout' })
+    expect(cancelled).toBe(true)
+    expect((await client.sendMessage('Try again.')).text).toBe('The retry completed.')
+    expect(client.state.status).toBe('ready')
+  })
+
   test('screen observation uses the current signed session and keeps image bytes out of client state', async () => {
     const imageDataUrl = `data:image/png;base64,${btoa('screen pixels')}`
     let observedUrl = ''
@@ -1325,6 +1347,28 @@ describe('ConvincedClient transport', () => {
     }])
     expect(JSON.stringify(failures)).not.toContain('private@example.com')
     expect(JSON.stringify(failures)).not.toContain('Private Company')
+  })
+
+  test('initializes from the selected session config without a serial public-config request', async () => {
+    const paths: string[] = []
+    const selectedConfig = { ...config, orgName: 'Selected agent', slidesEnabled: true }
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      apiBase: 'https://mock.example',
+      fetch: (async input => {
+        const path = new URL(String(input)).pathname
+        paths.push(path)
+        if (path.endsWith('/session')) return Response.json({ sessionId: 'selected_session', config: selectedConfig })
+        if (path.endsWith('/slides/metadata')) return Response.json({ slides: [] })
+        if (path.endsWith('/slides')) return Response.json({ slides: [] })
+        throw new Error(`Unexpected request before session config: ${path}`)
+      }) as typeof fetch,
+    })
+    const state = await client.initialize()
+    expect(state.config?.orgName).toBe('Selected agent')
+    expect(paths[0]).toBe('/api/widget/demo/session')
+    expect(paths).toHaveLength(3)
+    expect(state.status).toBe('ready')
   })
 
   test('coalesces initialize calls and reuses one generated idempotency fingerprint', async () => {

@@ -2,6 +2,34 @@ import { describe, expect, test } from 'bun:test'
 import { iterateSse, normalizeApiBase, SSE_DONE } from '../src/transport'
 
 describe('SSE transport', () => {
+  test('continued network chunks refresh the idle deadline', async () => {
+    const encoder = new TextEncoder()
+    const response = new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(': heartbeat\n\n'))
+        await Bun.sleep(40)
+        controller.enqueue(encoder.encode('data: {"delta":"Still working."}\n\n'))
+        await Bun.sleep(40)
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }))
+    const events: unknown[] = []
+    for await (const event of iterateSse(response, undefined, { idleTimeoutMs: 70 })) events.push(event)
+    expect(events).toEqual([{ delta: 'Still working.' }, SSE_DONE])
+  })
+
+  test('bounds a stalled body after successful response headers and cancels its reader', async () => {
+    let cancelled = false
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel() { cancelled = true } }))
+    const iterator = iterateSse(response, undefined, { idleTimeoutMs: 20 })
+    await expect(Promise.race([
+      iterator.next(),
+      Bun.sleep(100).then(() => { throw new Error('stream remained stuck after headers') }),
+    ])).rejects.toMatchObject({ code: 'stream_idle_timeout' })
+    expect(cancelled).toBe(true)
+  })
+
   test('normalizes CRLF framing split across network chunks', async () => {
     const encoder = new TextEncoder()
     const chunks = [
