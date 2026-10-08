@@ -50,6 +50,28 @@ afterEach(() => {
 })
 
 describe('GPT Live WebRTC controller', () => {
+  test('starts a delegation immediately when its caller transcript already covers the provider offset', async () => {
+    installBrowser()
+    const requests: string[] = []
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: (async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_offset' } }))
+        return Response.json({ session: { id: 'live_offset' }, transport: { type: 'webrtc', sdp: 'answer' } })
+      }) as unknown as typeof fetch,
+      onClientDelegation: async ({ transcript }) => {
+        requests.push(transcript)
+        return { message: 'The supplier workflow is ready.' }
+      },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show supplier workflows.', start_ms: 0, end_ms: 500 })
+    peer.channel.emit({ type: 'session.delegation.created', offset_ms: 500,
+      delegation: { id: 'covered', target: 'client' } })
+    try { expect(requests).toEqual(['Show supplier workflows.']) }
+    finally { await controller.end() }
+  })
+
   test('ending during microphone permission prevents a late Live connection', async () => {
     installBrowser()
     let grantMicrophone!: (media: MediaStream) => void
@@ -310,6 +332,7 @@ describe('GPT Live WebRTC controller', () => {
     await waitFor(() => client.state.messages.some(message => message.text.includes('Draft text')))
     expect(peer.channel.sent.filter(event => event.type === 'session.commentary.append')).toHaveLength(0)
     push({ type: 'voice_thinking', text: 'Checking the dispatch evidence.' })
+    push({ type: 'voice_instruction', text: 'Explain the available finding briefly, then listen.' })
     push({ type: 'voice_context', text: 'The dispatch workflow is open on the page.' })
     await waitFor(() => peer.channel.sent.some(event => event.type === 'session.commentary.append'))
     expect(peer.channel.sent).toContainEqual(expect.objectContaining({
@@ -317,19 +340,73 @@ describe('GPT Live WebRTC controller', () => {
       content: 'Checking the dispatch evidence.',
     }))
     expect(peer.channel.sent).toContainEqual(expect.objectContaining({
+      type: 'session.instructions.append', delegation_id: 'streamed',
+      content: 'Explain the available finding briefly, then listen.',
+    }))
+    expect(client.state.messages.at(-1)?.text).not.toContain('Explain the available finding')
+    expect(peer.channel.sent).toContainEqual(expect.objectContaining({
       type: 'session.commentary.append', delegation_id: 'streamed',
       content: 'The dispatch workflow is open on the page.',
     }))
 
-    push({ type: 'voice_briefing', text: 'The dispatch workflow is open on the page.' })
-    await Bun.sleep(10)
+    push({ type: 'voice_briefing', text: 'Pickup windows are coordinated and shipment exceptions are highlighted.' })
+    await waitFor(() => peer.channel.sent.some(event => event.content === 'Pickup windows are coordinated and shipment exceptions are highlighted.'))
     expect(peer.channel.sent.filter(event =>
-      event.type === 'session.commentary.append' && event.delegation_id === 'streamed')).toHaveLength(1)
+      event.type === 'session.commentary.append' && event.delegation_id === 'streamed')).toHaveLength(2)
+    expect(client.state.status).toBe('streaming')
     stream.enqueue(encoder.encode('data: [DONE]\n\n'))
     stream.close()
     await waitFor(() => client.state.status === 'ready')
     expect(peer.channel.sent.filter(event =>
       event.type === 'session.commentary.append' && event.delegation_id === 'streamed')).toHaveLength(2)
+    await live.end()
+  })
+
+  test.each(['delegated', 'typed'])('delivers an early committed %s finding once when the canonical briefing matches', async mode => {
+    installBrowser()
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    const encoder = new TextEncoder()
+    const push = (event: JsonObject) => stream.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+    const client = new ConvincedClient({
+      orgSlug: 'demo',
+      fetch: (async (input, init) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/session')) return Response.json({ sessionId: 'early', sessionCapability: 'cap',
+          config: { orgName: 'Demo', orgSlug: 'demo', voiceEnabled: true } })
+        if (path.endsWith('/live')) {
+          queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'early_live' } }))
+          return Response.json({ session: { id: 'early_live' }, transport: { type: 'webrtc', sdp: 'answer' } })
+        }
+        if (path.endsWith('/chat')) {
+          expect(JSON.parse(String(init?.body))).toMatchObject({ voiceTurn: true, voiceBriefingFirst: true })
+          return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller } }))
+        }
+        throw new Error(`Unexpected URL: ${input}`)
+      }) as typeof fetch,
+    })
+    await client.createSession()
+    const live = client.createLiveController()
+    await live.start()
+    let typed: ReturnType<typeof client.sendMessage> | undefined
+    if (mode === 'typed') typed = client.sendMessage('Show supplier.')
+    else {
+      peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show supplier.', end_ms: 100 })
+      peer.channel.emit({ type: 'session.delegation.created', offset_ms: 100,
+        delegation: { id: 'early_delegation', target: 'client' } })
+    }
+    await waitFor(() => Boolean(stream))
+    const finding = 'Pickup windows match dock availability.'
+    push({ type: 'voice_context', text: finding })
+    await waitFor(() => peer.channel.sent.some(event => event.content === finding))
+    push({ type: 'voice_briefing', text: finding })
+    expect(client.state.status).toBe('streaming')
+    push({ delta: 'The supplier workflow coordinates repeatable collection plans.' })
+    stream.enqueue(encoder.encode('data: [DONE]\n\n'))
+    stream.close()
+    if (typed) await typed
+    await waitFor(() => client.state.status === 'ready')
+    expect(peer.channel.sent.filter(event => event.type === 'session.commentary.append' && event.content === finding)).toHaveLength(1)
+    expect(client.state.messages.at(-1)?.text).toBe('The supplier workflow coordinates repeatable collection plans.')
     await live.end()
   })
 
@@ -1241,6 +1318,36 @@ describe('GPT Live WebRTC controller', () => {
     await waitFor(() => delegated.length === 1)
     expect(delegated).toEqual(['Open inventory.'])
     await controller.end()
+  })
+
+  test('a server-owned delegation opening starts delivery before a slow backend result', async () => {
+    installBrowser()
+    let resolveResult!: (result: { message: string }) => void
+    const pending = new Promise<{ message: string }>(resolve => { resolveResult = resolve })
+    let started = false
+    const controller = new ConvincedLiveController({
+      descriptor: { sessionUrl: 'https://app.example/live' },
+      fetch: Object.assign(async () => {
+        queueMicrotask(() => peer.channel.emit({ type: 'session.started', session: { id: 'live_1' } }))
+        return Response.json({ session: { id: 'live_1' }, transport: { type: 'webrtc', sdp: 'answer' },
+          delegationStartedInstruction: 'Explain a known reference fact while page work continues.' })
+      }, { preconnect() {} }),
+      onClientDelegation: () => { started = true; return pending },
+    })
+    await controller.start()
+    peer.channel.emit({ type: 'session.input_transcript.delta', delta: 'Show supplier workflows.', end_ms: 500 })
+    const event = { type: 'session.delegation.created', offset_ms: 500, delegation: { id: 'early-opening', target: 'client' } }
+    peer.channel.emit(event)
+    peer.channel.emit(event)
+    await waitFor(() => started)
+    expect(peer.channel.sent.filter(event => event.type === 'session.instructions.append')).toEqual([
+      expect.objectContaining({ delegation_id: 'early-opening', content: 'Explain a known reference fact while page work continues.' }),
+    ])
+    expect(peer.channel.sent.some(event => event.type === 'session.commentary.append')).toBe(false)
+    await controller.end()
+    resolveResult({ message: 'Late result.' })
+    await Bun.sleep(0)
+    expect(peer.channel.sent.some(event => event.content === 'Late result.')).toBe(false)
   })
 
   test('duplicate delivery of one client delegation runs the host action once', async () => {

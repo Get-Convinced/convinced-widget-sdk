@@ -72,7 +72,9 @@ export interface LiveClientDelegationResult {
 }
 
 export interface LiveDelegationProgress {
-  kind: 'commentary' | 'thinking'
+  kind: 'commentary' | 'thinking' | 'instruction'
+  /** @internal The backend's validated final briefing, received before stream drain. */
+  final?: boolean
   /** Coherent, verified public context or quiet progress; never hidden reasoning. */
   text: string
 }
@@ -173,6 +175,7 @@ export class ConvincedLiveController {
   private readonly pendingDelegations: PendingDelegation[] = []
   private latestDelegationId: string | null = null
   private activeDelegation: AbortController | null = null
+  private delegationStartedInstruction: string | null = null
   private backendSpeechActive = false
   private backendSpeechUntil = 0
   private delegationTimer: ReturnType<typeof setTimeout> | null = null
@@ -217,6 +220,7 @@ export class ConvincedLiveController {
     this.inputTurnStartMs = undefined
     this.pendingDelegations.length = 0
     this.latestDelegationId = null
+    this.delegationStartedInstruction = null
     this.backendSpeechActive = false
     this.backendSpeechUntil = 0
     if (this.delegationTimer) clearTimeout(this.delegationTimer)
@@ -309,6 +313,14 @@ export class ConvincedLiveController {
     })
   }
 
+  /** @internal Server-owned direction for delivering an available finding. */
+  sendBackendInstructions(text: string, delegationId: string | null = null): void {
+    this.send({
+      type: 'session.instructions.append', event_id: id('instruction'), delegation_id: delegationId,
+      content: bounded(text, 'backend delivery instruction', MAX_LIVE_APPEND_BYTES),
+    })
+  }
+
   sendContextualUpdate(text: string, contextId?: string): void {
     const context = bounded(text, 'context', MAX_LIVE_CONTEXT_BYTES)
     const prefix = contextId ? `[context:${bounded(contextId, 'contextId', 128)}]\n` : ''
@@ -396,11 +408,15 @@ export class ConvincedLiveController {
           ? responseBody.error
           : `Live session creation failed (${response.status}).`)
       }
-      const body = await response.json() as { session?: { id?: unknown }; transport?: { type?: unknown; sdp?: unknown } }
+      const body = await response.json() as { session?: { id?: unknown }; transport?: { type?: unknown; sdp?: unknown }; delegationStartedInstruction?: unknown }
       if (generation !== this.generation) return this.state
       const liveSessionId = validId(body.session?.id)
       if (!liveSessionId || body.transport?.type !== 'webrtc' || typeof body.transport.sdp !== 'string') {
         throw new Error('Live session endpoint returned an invalid response.')
+      }
+      if (typeof body.delegationStartedInstruction === 'string' && body.delegationStartedInstruction.trim() &&
+          new TextEncoder().encode(body.delegationStartedInstruction).byteLength <= MAX_LIVE_APPEND_BYTES) {
+        this.delegationStartedInstruction = body.delegationStartedInstruction.trim()
       }
       this.update({ liveSessionId })
       call(() => this.options.onLiveSessionId?.(liveSessionId))
@@ -483,7 +499,14 @@ export class ConvincedLiveController {
           ...(typeof event.offset_ms === 'number' ? { offsetMs: event.offset_ms } : {}),
         },
       })
-      this.scheduleDelegation(generation)
+      // A covered audio offset gives us the complete caller input already.
+      // Keep the settle window only for captions that are still arriving.
+      if (typeof event.offset_ms === 'number' && this.inputTranscriptEndMs !== undefined &&
+          this.inputTranscriptEndMs >= event.offset_ms) {
+        this.claimPendingDelegation(generation)
+      } else {
+        this.scheduleDelegation(generation)
+      }
       return
     }
     if (type === 'session.input_transcript.delta' || type === 'session.output_transcript.delta') {
@@ -704,8 +727,12 @@ export class ConvincedLiveController {
     const controller = new AbortController()
     this.activeDelegation = controller
     const sentCommentary = new Set<string>()
+    let deliveredFinalCommentary: string | undefined
     try {
       if (!this.options.onClientDelegation) throw new Error('Live client delegation is not configured.')
+      if (this.delegationStartedInstruction) {
+        this.sendBackendInstructions(this.delegationStartedInstruction, delegation.delegationId)
+      }
       const result = await this.options.onClientDelegation(delegation, controller.signal, (update) => {
         if (generation !== this.generation || this.stateValue.status !== 'connected' ||
             delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
@@ -714,9 +741,13 @@ export class ConvincedLiveController {
         if (update.kind === 'commentary') {
           let content: string
           try { content = liveCommentary(update.text) } catch { return }
-          if (sentCommentary.has(content)) return
-          this.sendBackendResult(content, delegation.delegationId)
-          sentCommentary.add(content)
+          if (!sentCommentary.has(content)) {
+            this.sendBackendResult(content, delegation.delegationId)
+            sentCommentary.add(content)
+          }
+          if (update.final) deliveredFinalCommentary = content
+        } else if (update.kind === 'instruction') {
+          this.sendBackendInstructions(update.text, delegation.delegationId)
         } else if (update.kind === 'thinking') {
           const content = bounded(update.text, 'delegation progress', MAX_LIVE_APPEND_BYTES)
           this.send({
@@ -737,9 +768,11 @@ export class ConvincedLiveController {
       this.events.emit('backend_message', message)
       call(() => this.options.onBackendMessage?.(message))
       const finalCommentary = liveCommentary(result.speech ?? messageText)
-      // Completion is a distinct append even when its words match an interim
-      // finding. Otherwise the provider may never receive a final response.
-      this.sendBackendResult(finalCommentary, delegation.delegationId)
+      // An ordinary interim finding is not the final answer. A canonical
+      // briefing already delivered during stream drain must not be spoken twice.
+      if (deliveredFinalCommentary !== finalCommentary) {
+        this.sendBackendResult(finalCommentary, delegation.delegationId)
+      }
     } catch (cause) {
       if (generation !== this.generation || this.stateValue.status !== 'connected' ||
           delegation.delegationId !== this.latestDelegationId || controller.signal.aborted) return
@@ -747,7 +780,7 @@ export class ConvincedLiveController {
       const error = cause instanceof Error ? cause : new Error(String(cause))
       this.events.emit('error', error)
       call(() => this.options.onError?.(error, delegation))
-      if (this.stateValue.status === 'connected') {
+      if (this.stateValue.status === 'connected' && deliveredFinalCommentary === undefined) {
         this.sendBackendResult('I could not complete that request. Please try again.', delegation.delegationId)
       }
     } finally {

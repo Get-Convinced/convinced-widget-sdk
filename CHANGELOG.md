@@ -2,6 +2,16 @@
 
 ## 0.1.9
 
+Local performance candidate, not published by this change:
+
+- Initialize directly from the selected signed session's configuration, removing the serial public-config request before the first turn. Explicit `getConfig()` remains available.
+- Relay a server-owned `voice_instruction` through Live instructions so a ready grounded finding can replace an ongoing acknowledgment without cancelling page work. Keep delivery instructions out of chat.
+- Apply an optional server-owned `delegationStartedInstruction` as soon as a covered caller turn delegates. Live can explain an already-loaded reference fact while backend preparation runs; duplicate and superseded delegations remain fenced.
+- Forward canonical voice briefings before SSE completion and avoid repeated final delivery. Support negotiated early grounded speech after a verified page action, including typed turns with Live connected.
+- Start delegation immediately when caller captions already cover its provider offset; keep settling checks for incomplete input.
+- Compact and deduplicate automatic Live page orientation to prevent repeated full-page context bursts. Preserve full page evidence for the shared backend and the explicit host-context API.
+- Cancel a chat response body after 35 seconds without data, configurable via `chatStreamIdleTimeoutMs`, and keep signed continuation expiry active through body drain. Release stalled turns so later messages can proceed.
+
 - Keep the latest caller question available when Live acknowledges it and then delegates the same turn, including after caption flush. Reclaiming that question removes its provisional native exchange from shared history, so the delegated question appears once.
 - Ignore a delegation whose timeline predates a newer caller, without consuming that caller. If a delegation truly has no transcript after the existing wait, send a brief recoverable Live response asking the caller to repeat.
 - Preserve the 0.1.8 chat, tool, page-snapshot, mute, and backend configuration contracts. This patch does not resolve the separately reported unexpected input fragments during digitally silent or muted audio.

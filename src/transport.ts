@@ -1,6 +1,7 @@
 import type { WidgetSseEvent } from './types.js'
 
 export const SSE_DONE = Symbol('convinced_sse_done')
+export const DEFAULT_SSE_IDLE_TIMEOUT_MS = 35_000
 
 export class ConvincedApiError extends Error {
   readonly status: number
@@ -46,6 +47,7 @@ export async function apiError(response: Response): Promise<ConvincedApiError> {
 export async function* iterateSse(
   response: Response,
   signal?: AbortSignal,
+  options: { idleTimeoutMs?: number } = {},
 ): AsyncGenerator<WidgetSseEvent | typeof SSE_DONE> {
   if (!response.ok) throw await apiError(response)
   if (!response.body) {
@@ -55,6 +57,10 @@ export async function* iterateSse(
     })
   }
 
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SSE_IDLE_TIMEOUT_MS
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
+    throw new RangeError('SSE idle timeout must be a positive finite number.')
+  }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -63,7 +69,20 @@ export async function* iterateSse(
 
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const idle = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new ConvincedApiError('The response stream stopped delivering data.', {
+            status: 408, code: 'stream_idle_timeout',
+          })
+          reject(error)
+          void reader.cancel(error).catch(() => undefined)
+        }, idleTimeoutMs)
+      })
+      let result: Awaited<ReturnType<typeof reader.read>>
+      try { result = await Promise.race([reader.read(), idle]) }
+      finally { if (timer) clearTimeout(timer) }
+      const { done, value } = result
       if (done) break
       if (signal?.aborted) throw signal.reason ?? new Error('SSE stream was cancelled.')
       buffer += decoder.decode(value, { stream: true })
